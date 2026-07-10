@@ -138,7 +138,7 @@ def _align_ply(ply_path: Path) -> None:
             tmp_path.unlink()
 
 
-def main() -> int:
+def main(is_loading) -> int:
     p = argparse.ArgumentParser(description="Run ffmpeg + COLMAP + Brush to reconstruct a 3D splat from a video")
     p.add_argument("input_file", help="Absolute path to the input video file")
     p.add_argument("output_file", help="Absolute path for the exported .ply asset")
@@ -154,7 +154,11 @@ def main() -> int:
 
     input_path = Path(args.input_file).expanduser()
     output_path = Path(args.output_file).expanduser()
+    output_dir = output_path.parent
+    output_name = output_path.name
+    output_dir.mkdir(parents=True, exist_ok=True)
 
+    
     try:
         input_path = input_path.resolve()
         output_path = output_path.resolve()
@@ -169,9 +173,7 @@ def main() -> int:
         print(f"run_processing: input is not a readable file: {input_path}", file=sys.stderr)
         return 1
 
-    output_dir = output_path.parent
-    output_name = output_path.name
-    output_dir.mkdir(parents=True, exist_ok=True)
+
 
     tmp_dir = Path.cwd() / "tmp"
     if tmp_dir.exists():
@@ -198,134 +200,145 @@ def main() -> int:
 
     colmap = _resolve_colmap()
     brush = _resolve_brush()
+    if is_loading :
+        brush_args = [
+            brush,
+            sys.argv[1],
+            "--with-viewer"
+        ]
+        _run_step("brush", brush_args)
+    else :     
+        
 
-    if args.dry_run:
-        print("Dry run only. The following steps would be executed:")
-        print("  1. ffmpeg")
-        print("  2. COLMAP feature extraction")
-        print("  3. COLMAP sequential matching")
-        print("  4. COLMAP mapper")
-        print("  5. Brush training/export")
-        print("  6. Optional splat-transform cleanup/alignment")
+
+        if args.dry_run:
+            print("Dry run only. The following steps would be executed:")
+            print("  1. ffmpeg")
+            print("  2. COLMAP feature extraction")
+            print("  3. COLMAP sequential matching")
+            print("  4. COLMAP mapper")
+            print("  5. Brush training/export")
+            print("  6. Optional splat-transform cleanup/alignment")
+            return 0
+
+        _run_step("ffmpeg", ffmpeg_cmd)
+
+        feature_args = [
+            colmap,
+            "feature_extractor",
+            "--database_path",
+            str(tmp_dir / "database.db"),
+            "--image_path",
+            str(images_dir),
+            "--ImageReader.single_camera",
+            "1",
+            "--ImageReader.camera_model",
+            "SIMPLE_RADIAL",
+            "--SiftExtraction.estimate_affine_shape",
+            "1",
+            "--SiftExtraction.domain_size_pooling",
+            "1",
+            "--SiftExtraction.max_num_features",
+            "16384",
+            "--SiftExtraction.num_threads",
+            str(os.cpu_count() or 1)
+        ]
+        if args.use_gpu and _colmap_has_cuda():
+            feature_args.extend(["--SiftExtraction.use_gpu", "1"])
+        else:
+            feature_args.extend(["--SiftExtraction.use_gpu", "0"])
+        _run_step("feature_extractor", feature_args)
+
+        matcher_args = [
+            colmap,
+            "sequential_matcher",
+            "--database_path",
+            str(tmp_dir / "database.db"),
+            "--SequentialMatching.overlap",
+            "20",
+            "--SiftMatching.max_num_matches", "32768",
+            "--SiftMatching.guided_matching", "1",
+            "--SiftMatching.num_threads", str(os.cpu_count() or 1),
+        ]
+
+        if args.use_gpu and _colmap_has_cuda():
+            matcher_args.extend(["--SiftMatching.use_gpu", "1"])
+        else:
+            matcher_args.extend(["--SiftMatching.use_gpu", "0"])
+        _run_step("sequential_matcher", matcher_args)
+
+        sparse_dir = tmp_dir / "sparse"
+        sparse_dir.mkdir(parents=True, exist_ok=True)
+
+        mapper_args = [
+            colmap,
+            "mapper",
+            "--database_path",
+            str(tmp_dir / "database.db"),
+            "--image_path",
+            str(images_dir),
+            "--output_path",
+            str(sparse_dir),
+            "--Mapper.num_threads",
+            str(os.cpu_count() or 1),
+        ]
+        _run_step("mapper", mapper_args)
+
+        brush_args = [
+            brush,
+            str(tmp_dir),
+            "--total-train-iters",
+            str(args.total_train_iters),
+            "--export-every",
+            str(args.total_train_iters),
+            "--export-path",
+            str(output_dir),
+            "--export-name",
+            output_name,
+            "--with-viewer"
+        ]
+        _run_step("brush", brush_args)
+
+        ply_path = output_dir / output_name
+        if not ply_path.is_file():
+            raise FileNotFoundError(f"Brush did not produce the expected output: {ply_path}")
+
+        try:
+            splat_transform = _splat_transform_executable()
+        except FileNotFoundError:
+            splat_transform = None
+
+        if splat_transform:
+            temp_ply = tempfile.NamedTemporaryFile(suffix=".ply", dir=str(output_dir), delete=False)
+            temp_ply.close()
+            temp_ply_path = Path(temp_ply.name)
+            _run_step(
+                "splat-transform clean transparents",
+                [
+                    splat_transform,
+                    str(ply_path),
+                    "-V",
+                    "opacity,gt,0.01",
+                    str(temp_ply_path),
+                    "-w",
+                ],
+            )
+            os.replace(temp_ply_path, ply_path)
+
+        if not args.skip_align and splat_transform:
+            _align_ply(ply_path)
+
+        if not args.keep_temp:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        print(f"Done: {ply_path}", flush=True)
         return 0
 
-    _run_step("ffmpeg", ffmpeg_cmd)
-
-    feature_args = [
-        colmap,
-        "feature_extractor",
-        "--database_path",
-        str(tmp_dir / "database.db"),
-        "--image_path",
-        str(images_dir),
-        "--ImageReader.single_camera",
-        "1",
-        "--ImageReader.camera_model",
-        "SIMPLE_RADIAL",
-        "--SiftExtraction.estimate_affine_shape",
-        "1",
-        "--SiftExtraction.domain_size_pooling",
-        "1",
-        "--SiftExtraction.max_num_features",
-        "16384",
-        "--SiftExtraction.num_threads",
-        str(os.cpu_count() or 1)
-    ]
-    if args.use_gpu and _colmap_has_cuda():
-        feature_args.extend(["--SiftExtraction.use_gpu", "1"])
-    else:
-        feature_args.extend(["--SiftExtraction.use_gpu", "0"])
-    _run_step("feature_extractor", feature_args)
-
-    matcher_args = [
-        colmap,
-        "sequential_matcher",
-        "--database_path",
-        str(tmp_dir / "database.db"),
-        "--SequentialMatching.overlap",
-        "20",
-        "--SiftMatching.max_num_matches", "32768",
-        "--SiftMatching.guided_matching", "1",
-        "--SiftMatching.num_threads", str(os.cpu_count() or 1),
-    ]
-
-    if args.use_gpu and _colmap_has_cuda():
-        matcher_args.extend(["--SiftMatching.use_gpu", "1"])
-    else:
-        matcher_args.extend(["--SiftMatching.use_gpu", "0"])
-    _run_step("sequential_matcher", matcher_args)
-
-    sparse_dir = tmp_dir / "sparse"
-    sparse_dir.mkdir(parents=True, exist_ok=True)
-
-    mapper_args = [
-        colmap,
-        "mapper",
-        "--database_path",
-        str(tmp_dir / "database.db"),
-        "--image_path",
-        str(images_dir),
-        "--output_path",
-        str(sparse_dir),
-        "--Mapper.num_threads",
-        str(os.cpu_count() or 1),
-    ]
-    _run_step("mapper", mapper_args)
-
-    brush_args = [
-        brush,
-        str(tmp_dir),
-        "--total-train-iters",
-        str(args.total_train_iters),
-        "--export-every",
-        str(args.total_train_iters),
-        "--export-path",
-        str(output_dir),
-        "--export-name",
-        output_name,
-    ]
-    _run_step("brush", brush_args)
-
-    ply_path = output_dir / output_name
-    if not ply_path.is_file():
-        raise FileNotFoundError(f"Brush did not produce the expected output: {ply_path}")
-
-    try:
-        splat_transform = _splat_transform_executable()
-    except FileNotFoundError:
-        splat_transform = None
-
-    if splat_transform:
-        temp_ply = tempfile.NamedTemporaryFile(suffix=".ply", dir=str(output_dir), delete=False)
-        temp_ply.close()
-        temp_ply_path = Path(temp_ply.name)
-        _run_step(
-            "splat-transform clean transparents",
-            [
-                splat_transform,
-                str(ply_path),
-                "-V",
-                "opacity,gt,0.01",
-                str(temp_ply_path),
-                "-w",
-            ],
-        )
-        os.replace(temp_ply_path, ply_path)
-
-    if not args.skip_align and splat_transform:
-        _align_ply(ply_path)
-
-    if not args.keep_temp:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    print(f"Done: {ply_path}", flush=True)
-    return 0
 
 
 
 
-
-def test_function(inputfile, outputfile, fps, starttime=None, endtime=None, totaltrainiters=10000, usegpu=True, keeptemp=False, skipalign=False):
+def run(inputfile, outputfile, fps, starttime=None, endtime=None, totaltrainiters=10000, usegpu=True, keeptemp=False, skipalign=False):
     sys.argv = [
         "run_processing.py",
         inputfile,
@@ -342,10 +355,17 @@ def test_function(inputfile, outputfile, fps, starttime=None, endtime=None, tota
     if skipalign:
         sys.argv.append("--skip-align")
 
-    return main()
+    return main(False)
+
+def load(inputfile):
+    sys.argv = [
+        "run_processing.py",
+        inputfile,inputfile
+    ]
+    return main(True)
 
 
-input_file = '/home/ubuntu/Stage/DATASETS/chair.mp4'
-output_file = '/home/ubuntu/Stage/output/chair.ply'
+input_file = '/home/ubuntu/Stage/DATASETS/meetingroom.mp4'
+output_file = '/home/ubuntu/Stage/output/meetingroom.ply'
 
-test_function(input_file,output_file, fps=1.0, totaltrainiters=5000, usegpu=True, keeptemp=False, skipalign=False)
+#run(input_file,output_file, fps=1.0, totaltrainiters=1000, usegpu=True, keeptemp=False, skipalign=False)
