@@ -16,7 +16,7 @@ sudo apt-get install -y \
   clang \
   python3-pip \
   python3-venv
-
+sudo apt-get install -y pyside
 sudo apt-get install -y colmap
 
 if [ ! -d "$HOME/.cargo" ]; then

@@ -345,7 +345,7 @@ def test_function(inputfile, outputfile, fps, starttime=None, endtime=None, tota
     return main()
 
 
-input_file = '/home/ubuntu/Stage/DATASETS/meetingqualite.mp4'
-output_file = '/home/ubuntu/Stage/output/meetingqualite3.ply'
+input_file = '/home/ubuntu/Stage/DATASETS/chair.mp4'
+output_file = '/home/ubuntu/Stage/output/chair.ply'
 
-test_function(input_file,output_file, fps=3.0, totaltrainiters=5000, usegpu=True, keeptemp=False, skipalign=False)
+test_function(input_file,output_file, fps=1.0, totaltrainiters=5000, usegpu=True, keeptemp=False, skipalign=False)
