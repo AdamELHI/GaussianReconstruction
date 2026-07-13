@@ -46,7 +46,7 @@ class Menu(QMainWindow):
         self.content_layout = QVBoxLayout()
         self.content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-#Labels et boutons pour selectionner les fichiers d'entree et de sortie, lancer la reconstruction, charger une reconstruction, afficher le status et la barre de progression (progression + log à faire)
+#Labels et boutons pour selectionner les fichiers d'entrée et de sortie, lancer la reconstruction, charger une reconstruction, afficher le status et la barre de progression (progression + log à faire)
 
         self.input_label = QLabel("Vidéo : Aucune vidéo sélectionnée")
         self.input_label.setWordWrap(True)

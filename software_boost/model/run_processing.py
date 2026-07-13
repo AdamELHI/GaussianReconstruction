@@ -15,13 +15,29 @@ from plyfile import PlyData
 from scipy.spatial.transform import Rotation
 
 
-def _run_step(label: str, cmd: list[str], cwd: Path | None = None) -> None:
+def emit_progress(progress_callback, message: str) -> None:
+    if progress_callback:
+        progress_callback(message)
+
+
+def run_step(
+    label: str,
+    cmd: list[str],
+    cwd: Path | None = None,
+    progress_callback=None,
+    user_message: str | None = None,
+    done_message: str | None = None,
+) -> None:
+    if user_message:
+        emit_progress(progress_callback, user_message)
     print(f"\n==> {label}", flush=True)
     print("$ " + " ".join(cmd), flush=True)
     subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True)
+    if done_message:
+        emit_progress(progress_callback, done_message)
 
 
-def _resolve_executable(names: list[str], env_var: str | None = None) -> str:
+def resolve_executable(names: list[str], env_var: str | None = None) -> str:
     if env_var and os.environ.get(env_var):
         return os.environ[env_var]
     for name in names:
@@ -31,11 +47,11 @@ def _resolve_executable(names: list[str], env_var: str | None = None) -> str:
     raise FileNotFoundError(f"Could not find any of {names}")
 
 
-def _resolve_colmap() -> str:
-    return _resolve_executable(["colmap"])
+def resolve_colmap() -> str:
+    return resolve_executable(["colmap"])
 
 
-def _resolve_brush() -> str:
+def resolve_brush(progress_callback=None) -> str:
     candidates = [
         os.environ.get("BRUSH_BIN"),
         str(Path(__file__).resolve().parent / "brush" / "target" / "debug" / "brush"),
@@ -49,14 +65,21 @@ def _resolve_brush() -> str:
     repo = Path(__file__).resolve().parent / "brush"
     if repo.is_dir():
         print("Building Brush because no binary was found...", flush=True)
-        _run_step("build brush", ["cargo", "build", "-p", "brush-app"], cwd=repo)
+        run_step(
+            "build brush",
+            ["cargo", "build", "-p", "brush-app"],
+            cwd=repo,
+            progress_callback=progress_callback,
+            user_message="Compilation de Brush, car aucun executable pret n'a ete trouve.",
+            done_message="Brush est compile et pret a etre utilise.",
+        )
         built = repo / "target" / "debug" / "brush"
         if built.is_file():
             return str(built)
     raise FileNotFoundError("Brush executable not found")
 
 
-def _colmap_has_cuda() -> bool:
+def colmap_has_cuda() -> bool:
     try:
         return True
     except subprocess.CalledProcessError:
@@ -64,15 +87,15 @@ def _colmap_has_cuda() -> bool:
     return "without CUDA" not in help_text
 
 
-def _splat_transform_executable() -> str:
+def splat_transform_executable() -> str:
     """Resolve ``splat-transform`` for ``subprocess`` (Windows needs ``.cmd`` path)."""
     override = os.environ.get("SPLAT_TRANSFORM")
     if override:
         return override
-    return _resolve_executable(["splat-transform", "splat-transform.cmd", "splat-transform.exe"])
+    return resolve_executable(["splat-transform", "splat-transform.cmd", "splat-transform.exe"])
 
 
-def _load_ply_point_cloud(ply_path: Path) -> np.ndarray:
+def load_ply_point_cloud(ply_path: Path) -> np.ndarray:
     """Load vertex x,y,z from a .ply as ``(N, 3)`` float64 (uses ``plyfile``)."""
     path = ply_path.resolve()
     if not path.is_file():
@@ -85,7 +108,7 @@ def _load_ply_point_cloud(ply_path: Path) -> np.ndarray:
     return np.column_stack((x, y, z))
 
 
-def _pca_xyz(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def pca_xyz(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Covariance PCA: principal directions."""
     if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError("points must have shape (N, 3)")
@@ -102,13 +125,13 @@ def _pca_xyz(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return mean, components
 
 
-def _align_ply(ply_path: Path) -> None:
+def align_ply(ply_path: Path, progress_callback=None) -> None:
     """PCA-align the exported splat using splat-transform."""
     ply_path = ply_path.resolve()
-    points = _load_ply_point_cloud(ply_path)
+    points = load_ply_point_cloud(ply_path)
     if points.size == 0:
         return
-    mean, components = _pca_xyz(points)
+    mean, components = pca_xyz(points)
     R = np.asarray(components, dtype=np.float64)
     if np.linalg.det(R) < 0:
         R[2, :] *= -1.0
@@ -121,16 +144,19 @@ def _align_ply(ply_path: Path) -> None:
     os.close(fd)
     tmp_path = Path(tmp_name)
     try:
-        _run_step(
+        run_step(
             "splat-transform (PCA align)",
             [
-                _splat_transform_executable(),
+                splat_transform_executable(),
                 str(ply_path),
                 f"--rotate={ex},{ey},{ez}",
                 f"--translate={tx},{ty},{tz}",
                 str(tmp_path),
                 "-w",
             ],
+            progress_callback=progress_callback,
+            user_message="Recentrage du modele 3D pour faciliter son affichage.",
+            done_message="Modele 3D recentre.",
         )
         os.replace(tmp_path, ply_path)
     finally:
@@ -138,7 +164,7 @@ def _align_ply(ply_path: Path) -> None:
             tmp_path.unlink()
 
 
-def main(is_loading) -> int:
+def main(is_loading, progress_callback=None) -> int:
     p = argparse.ArgumentParser(description="Run ffmpeg + COLMAP + Brush to reconstruct a 3D splat from a video")
     p.add_argument("input_file", help="Absolute path to the input video file")
     p.add_argument("output_file", help="Absolute path for the exported .ply asset")
@@ -157,6 +183,11 @@ def main(is_loading) -> int:
     output_dir = output_path.parent
     output_name = output_path.name
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    emit_progress(
+        progress_callback,
+        "Verification de la video et preparation du dossier de sortie.",
+    )
 
     
     try:
@@ -181,6 +212,10 @@ def main(is_loading) -> int:
     tmp_dir.mkdir(parents=True, exist_ok=True)
     images_dir = tmp_dir / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
+    emit_progress(
+        progress_callback,
+        "Preparation du dossier temporaire pour les images de travail.",
+    )
 
     ffmpeg_cmd = ["ffmpeg", "-i", str(input_path)]
     if args.start_time:
@@ -198,15 +233,25 @@ def main(is_loading) -> int:
         str(images_dir / "frame_%05d.jpg"),
     ])
 
-    colmap = _resolve_colmap()
-    brush = _resolve_brush()
+    emit_progress(
+        progress_callback,
+        "Verification des outils necessaires a la reconstruction.",
+    )
+    colmap = resolve_colmap()
+    brush = resolve_brush(progress_callback)
     if is_loading :
         brush_args = [
             brush,
             sys.argv[1],
             "--with-viewer"
         ]
-        _run_step("brush", brush_args)
+        run_step(
+            "brush",
+            brush_args,
+            progress_callback=progress_callback,
+            user_message="Ouverture du fichier 3D dans le visualiseur.",
+            done_message="Visualisation terminee.",
+        )
     else :     
         
 
@@ -221,7 +266,13 @@ def main(is_loading) -> int:
             print("  6. Optional splat-transform cleanup/alignment")
             return 0
 
-        _run_step("ffmpeg", ffmpeg_cmd)
+        run_step(
+            "ffmpeg",
+            ffmpeg_cmd,
+            progress_callback=progress_callback,
+            user_message="Extraction d'images depuis la video.",
+            done_message="Images extraites depuis la video.",
+        )
 
         feature_args = [
             colmap,
@@ -243,11 +294,17 @@ def main(is_loading) -> int:
             "--SiftExtraction.num_threads",
             str(os.cpu_count() or 1)
         ]
-        if args.use_gpu and _colmap_has_cuda():
+        if args.use_gpu and colmap_has_cuda():
             feature_args.extend(["--SiftExtraction.use_gpu", "1"])
         else:
             feature_args.extend(["--SiftExtraction.use_gpu", "0"])
-        _run_step("feature_extractor", feature_args)
+        run_step(
+            "feature_extractor",
+            feature_args,
+            progress_callback=progress_callback,
+            user_message="Recherche des points reconnaissables dans chaque image.",
+            done_message="Points importants detectes dans les images.",
+        )
 
         matcher_args = [
             colmap,
@@ -261,11 +318,17 @@ def main(is_loading) -> int:
             "--SiftMatching.num_threads", str(os.cpu_count() or 1),
         ]
 
-        if args.use_gpu and _colmap_has_cuda():
+        if args.use_gpu and colmap_has_cuda():
             matcher_args.extend(["--SiftMatching.use_gpu", "1"])
         else:
             matcher_args.extend(["--SiftMatching.use_gpu", "0"])
-        _run_step("sequential_matcher", matcher_args)
+        run_step(
+            "sequential_matcher",
+            matcher_args,
+            progress_callback=progress_callback,
+            user_message="Comparaison des images entre elles pour retrouver le mouvement de la camera.",
+            done_message="Images reliees entre elles.",
+        )
 
         sparse_dir = tmp_dir / "sparse"
         sparse_dir.mkdir(parents=True, exist_ok=True)
@@ -282,7 +345,13 @@ def main(is_loading) -> int:
             "--Mapper.num_threads",
             str(os.cpu_count() or 1),
         ]
-        _run_step("mapper", mapper_args)
+        run_step(
+            "mapper",
+            mapper_args,
+            progress_callback=progress_callback,
+            user_message="Construction d'une premiere structure 3D a partir des images.",
+            done_message="Structure 3D de base construite.",
+        )
 
         brush_args = [
             brush,
@@ -297,14 +366,20 @@ def main(is_loading) -> int:
             output_name,
             "--with-viewer"
         ]
-        _run_step("brush", brush_args)
+        run_step(
+            "brush",
+            brush_args,
+            progress_callback=progress_callback,
+            user_message="Entrainement du modele 3D avec Brush. Cette etape peut durer longtemps.",
+            done_message="Brush a exporte un premier fichier 3D.",
+        )
 
         ply_path = output_dir / output_name
         if not ply_path.is_file():
             raise FileNotFoundError(f"Brush did not produce the expected output: {ply_path}")
 
         try:
-            splat_transform = _splat_transform_executable()
+            splat_transform = splat_transform_executable()
         except FileNotFoundError:
             splat_transform = None
 
@@ -312,7 +387,7 @@ def main(is_loading) -> int:
             temp_ply = tempfile.NamedTemporaryFile(suffix=".ply", dir=str(output_dir), delete=False)
             temp_ply.close()
             temp_ply_path = Path(temp_ply.name)
-            _run_step(
+            run_step(
                 "splat-transform clean transparents",
                 [
                     splat_transform,
@@ -322,32 +397,60 @@ def main(is_loading) -> int:
                     str(temp_ply_path),
                     "-w",
                 ],
+                progress_callback=progress_callback,
+                user_message="Nettoyage des points presque invisibles dans le fichier 3D.",
+                done_message="Fichier 3D nettoye.",
             )
             os.replace(temp_ply_path, ply_path)
+        else:
+            emit_progress(
+                progress_callback,
+                "Nettoyage optionnel ignore, l'outil correspondant n'est pas disponible.",
+            )
 
         if not args.skip_align and splat_transform:
-            _align_ply(ply_path)
+            align_ply(ply_path, progress_callback)
+        elif args.skip_align:
+            emit_progress(
+                progress_callback,
+                "Alignement final ignore selon les parametres choisis.",
+            )
 
         if not args.keep_temp:
+            emit_progress(progress_callback, "Suppression des fichiers temporaires.")
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
         print(f"Done: {ply_path}", flush=True)
+        emit_progress(progress_callback, "Traitement termine.")
         return 0
 
 
 
 
 
-def run(inputfile, outputfile, fps, starttime=None, endtime=None, totaltrainiters=10000, usegpu=True, keeptemp=False, skipalign=False):
+def run(
+    inputfile,
+    outputfile,
+    fps,
+    starttime=None,
+    endtime=None,
+    totaltrainiters=10000,
+    usegpu=True,
+    keeptemp=False,
+    skipalign=False,
+    progress_callback=None,
+):
     sys.argv = [
         "run_processing.py",
         inputfile,
         outputfile,
         "--frame-rate", str(fps),
-        "--start-time", starttime,
-        "--end-time", endtime,
         "--total-train-iters", str(totaltrainiters),
     ]
+    if starttime:
+        sys.argv.extend(["--start-time", str(starttime)])
+    if endtime:
+        sys.argv.extend(["--end-time", str(endtime)])
     if usegpu:
         sys.argv.append("--use-gpu")
     if keeptemp:
@@ -355,7 +458,7 @@ def run(inputfile, outputfile, fps, starttime=None, endtime=None, totaltrainiter
     if skipalign:
         sys.argv.append("--skip-align")
 
-    return main(False)
+    return main(False, progress_callback=progress_callback)
 
 def load(inputfile):
     sys.argv = [
@@ -365,7 +468,7 @@ def load(inputfile):
     return main(True)
 
 
-input_file = '/home/ubuntu/Stage/DATASETS/icetea.mp4'
-output_file = '/home/ubuntu/Stage/output/icetea.ply'
+input_file = '/home/ubuntu/Stage/DATASETS/meetingroom.mp4'
+output_file = '/home/ubuntu/Stage/output/meetingroom.ply'
 
-run(input_file,output_file, fps=1.0, totaltrainiters=6000, usegpu=True, keeptemp=False, skipalign=False)
+#run(input_file,output_file, fps=1.0, totaltrainiters=1000, usegpu=True, keeptemp=False, skipalign=False)
