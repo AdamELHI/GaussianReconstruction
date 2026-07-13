@@ -16,7 +16,7 @@ class Settings(QDialog):
         "fps": 1.0,
         "start_time": None,
         "end_time": None,
-        "total_train_iters": 5000,
+        "total_train_iters": 7000,
         "use_gpu": True,
         "keep_temp": False,
         "skip_align": False,
@@ -25,7 +25,7 @@ class Settings(QDialog):
     def __init__(self, parameters=None, parent=None):
         super().__init__(parent)
 
-        self.setWindowTitle("Parametres de reconstruction")
+        self.setWindowTitle("Paramètres de reconstruction")
         self.resize(420, 260)
 
         self.parameters = self.DEFAULT_PARAMETERS.copy()

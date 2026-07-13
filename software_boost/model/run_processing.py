@@ -312,7 +312,7 @@ def main(is_loading, progress_callback=None) -> int:
             "--database_path",
             str(tmp_dir / "database.db"),
             "--SequentialMatching.overlap",
-            "20",
+            "10",
             "--SiftMatching.max_num_matches", "32768",
             "--SiftMatching.guided_matching", "1",
             "--SiftMatching.num_threads", str(os.cpu_count() or 1),
@@ -336,6 +336,7 @@ def main(is_loading, progress_callback=None) -> int:
         mapper_args = [
             colmap,
             "mapper",
+            "GLOBAL",
             "--database_path",
             str(tmp_dir / "database.db"),
             "--image_path",
