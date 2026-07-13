@@ -365,7 +365,7 @@ def load(inputfile):
     return main(True)
 
 
-input_file = '/home/ubuntu/Stage/DATASETS/meetingroom.mp4'
-output_file = '/home/ubuntu/Stage/output/meetingroom.ply'
+input_file = '/home/ubuntu/Stage/DATASETS/icetea.mp4'
+output_file = '/home/ubuntu/Stage/output/icetea.ply'
 
-#run(input_file,output_file, fps=1.0, totaltrainiters=1000, usegpu=True, keeptemp=False, skipalign=False)
+run(input_file,output_file, fps=1.0, totaltrainiters=6000, usegpu=True, keeptemp=False, skipalign=False)
