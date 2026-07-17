@@ -50,7 +50,7 @@ class Menu(QMainWindow):
 
         self.input_label = QLabel("Vidéo : Aucune vidéo sélectionnée")
         self.input_label.setWordWrap(True)
-        self.output_label = QLabel("Sortie : Aucun fichier de sortie")
+        self.output_label = QLabel("Sortie : Aucun chemin sélectionné")
         self.output_label.setWordWrap(True)
 
         self.select_video_button = QPushButton("Sélectionner une vidéo")
@@ -73,8 +73,6 @@ class Menu(QMainWindow):
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
         )
-        
-        #Pour plus tard 
 
 
         self.status_label = QLabel("Aucune reconstruction lancée.")
@@ -93,7 +91,7 @@ class Menu(QMainWindow):
         self.progress_log = QPlainTextEdit()
         self.progress_log.setReadOnly(True)
         self.progress_log.setPlaceholderText(
-            "Les etapes de reconstruction apparaitront ici."
+            "Les étapes de reconstruction apparaitront ici."
         )
         self.progress_log.setMinimumHeight(180)
         self.progress_log.setSizePolicy(

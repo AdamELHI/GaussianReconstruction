@@ -18,7 +18,7 @@ class Settings(QDialog):
         "end_time": None,
         "total_train_iters": 7000,
         "use_gpu": True,
-        "keep_temp": False,
+        "keep_temp": True,
         "skip_align": False,
     }
 
