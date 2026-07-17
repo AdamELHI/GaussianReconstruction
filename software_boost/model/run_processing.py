@@ -4,11 +4,11 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import cv2 as cv
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-
 import numpy as np
 from plyfile import PlyData
 from scipy.spatial.transform import Rotation
@@ -31,7 +31,12 @@ def run_step(
         emit_progress(progress_callback, user_message)
     print(f"\n==> {label}", flush=True)
     print("$ " + " ".join(cmd), flush=True)
-    subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True)
+    env = os.environ.copy()
+
+    env.pop("QT_PLUGIN_PATH", None)
+    env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+
+    subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True,env=env)
     if done_message:
         emit_progress(progress_callback, done_message)
 
@@ -61,7 +66,6 @@ def resolve_brush(progress_callback=None) -> str:
     for candidate in candidates:
         if candidate and Path(candidate).expanduser().is_file():
             return str(Path(candidate).expanduser())
-
     raise FileNotFoundError("Brush executable not found")
 
 
@@ -144,8 +148,31 @@ def align_ply(ply_path: Path, progress_callback=None) -> None:
             tmp_path.unlink()
 
 
+def get_frames_sharpness(video_capture, start_frame, end_frame):
+    list_sharpness = []
+
+    current_pos = video_capture.get(cv.CAP_PROP_POS_FRAMES)
+
+    video_capture.set(cv.CAP_PROP_POS_FRAMES, start_frame)
+
+    for i in range(start_frame, end_frame):
+        print("listing_sharpness : frame"+str(i)+ "/"+ str (video_capture.get(cv.CAP_PROP_FRAME_COUNT))) 
+        success, image = video_capture.read()
+
+        if not success:
+            break
+
+        gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
+        sharpness = cv.Laplacian(gray, cv.CV_64F).var()
+
+        list_sharpness.append(sharpness)
+
+    video_capture.set(cv.CAP_PROP_POS_FRAMES, current_pos)
+
+    return np.asarray(list_sharpness)
+
 def main(is_loading, progress_callback=None) -> int:
-    p = argparse.ArgumentParser(description="Run ffmpeg + COLMAP + Brush to reconstruct a 3D splat from a video")
+    p = argparse.ArgumentParser(description="Run Opencv + COLMAP + Brush to reconstruct a 3D splat from a video")
     p.add_argument("input_file", help="Absolute path to the input video file")
     p.add_argument("output_file", help="Absolute path for the exported .ply asset")
     p.add_argument("--frame-rate", type=float, default=5.0, help="Frames per second extracted from the video")
@@ -155,7 +182,6 @@ def main(is_loading, progress_callback=None) -> int:
     p.add_argument("--use-gpu", action="store_true", help="Enable GPU flags for COLMAP if CUDA is available")
     p.add_argument("--keep-temp", action="store_true", help="Keep the temporary COLMAP/Brush working directory")
     p.add_argument("--skip-align", action="store_true", help="Skip PCA alignment with splat-transform")
-    p.add_argument("--dry-run", action="store_true", help="Only validate the configuration and print commands")
     args = p.parse_args()
 
     input_path = Path(args.input_file).expanduser()
@@ -198,21 +224,7 @@ def main(is_loading, progress_callback=None) -> int:
         "Setting up the temporary folder for source images.",
     )
 
-    ffmpeg_cmd = ["ffmpeg", "-i", str(input_path)]
-    if args.start_time:
-        ffmpeg_cmd.extend(["-ss", args.start_time])
-    if args.end_time:
-        ffmpeg_cmd.extend(["-to", args.end_time])
-    ffmpeg_cmd.extend([
-        "-vf",
-        f"fps={args.frame_rate},scale=iw:ih:flags=lanczos",
-        "-c:v",
-        "mjpeg",
-        "-q:v",
-        "2",
-        "-y",
-        str(images_dir / "frame_%05d.jpg"),
-    ])
+
 
     emit_progress(
         progress_callback,
@@ -243,13 +255,60 @@ def main(is_loading, progress_callback=None) -> int:
         print("  6. Optional splat-transform cleanup/alignment")
     
         
-        run_step(
-            "ffmpeg",
-            ffmpeg_cmd,
-            progress_callback=progress_callback,
-            user_message="Extracting images from the video.",
-            done_message="Images extracted from the video.",
-        )
+
+        video_capture = cv.VideoCapture(str(input_path))
+
+        nb_frame = 0
+        nb_saved = 0
+
+        fps = video_capture.get(cv.CAP_PROP_FPS)
+        end_frame = int(video_capture.get(cv.CAP_PROP_FRAME_COUNT))
+
+        snapshot_every = 1
+
+        if args.start_time:
+            h, m, sec = map(int, args.start_time.split(":"))
+            start_frame = int((h * 3600 + m * 60 + sec) * fps)
+            nb_frame = start_frame
+
+        next_snapshot = nb_frame
+
+        if args.end_time:
+            h, m, sec = map(int, args.end_time.split(":"))
+            end_frame = int((h * 3600 + m * 60 + sec) * fps)
+        l_sharpness = get_frames_sharpness(video_capture,nb_frame,end_frame)
+        score_mean = l_sharpness.mean()
+        print("score_mean =", score_mean)
+        video_capture.set(cv.CAP_PROP_POS_FRAMES, nb_frame)
+
+        while nb_frame < end_frame:
+
+            success, image = video_capture.read()
+            if not success:
+                break
+
+            if nb_frame >= next_snapshot:
+
+                while success:
+
+                    gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
+                    sharpness = cv.Laplacian(gray, cv.CV_64F).var()
+
+                    print(f"Frame {nb_frame}: sharpness={sharpness}")
+                    image_path = images_dir / f"frame_{nb_saved:05d}.jpg"
+                    nb_saved +=1
+                    cv.imwrite(str(image_path), image)
+                    # Adapt interval in function of sharpness
+                    interval = min(int((fps / args.frame_rate)*(sharpness/score_mean)),1.5*fps//(args.frame_rate))
+                    print("interval =",interval)
+
+                    snapshot_every = max(1, interval)
+                    next_snapshot = nb_frame + snapshot_every
+                    break
+
+            nb_frame += 1
+        
+        print(f"{nb_saved} images extracted")
 
 
         # COLMAP feature extraction 
@@ -269,6 +328,7 @@ def main(is_loading, progress_callback=None) -> int:
             "1",
             "--SiftExtraction.domain_size_pooling",
             "1",
+            "--SiftExtraction.peak_threshold", "0.003",
             "--SiftExtraction.max_num_features",
             "32768",
             "--SiftExtraction.num_threads",
@@ -297,9 +357,8 @@ def main(is_loading, progress_callback=None) -> int:
             "--database_path",
             str(tmp_dir / "database.db"),
             "--SequentialMatching.overlap",
-            "30",
+            "50",
             "--SiftMatching.max_num_matches", "32768",
-            "--SiftMatching.max_distance", "1",
             "--SiftMatching.guided_matching", "1",
             "--SiftMatching.num_threads", str(os.cpu_count() or 1),
             
@@ -312,13 +371,12 @@ def main(is_loading, progress_callback=None) -> int:
             "--database_path",
             str(tmp_dir / "database.db"),
             "--SiftMatching.max_num_matches", "32768",
-            "--SiftMatching.max_distance", "1",
             "--SiftMatching.guided_matching", "1",
             "--SiftMatching.num_threads", str(os.cpu_count() or 1),
         ]
 
 
-        if args.use_gpu : 
+        if args.use_gpu :
             matcher_args.extend(["--SiftMatching.use_gpu", "1"])
         else:
             matcher_args.extend(["--SiftMatching.use_gpu", "0"])
@@ -340,7 +398,6 @@ def main(is_loading, progress_callback=None) -> int:
         mapper_args = [
             colmap,
             "mapper",
-            "GLOBAL",
             "--database_path",
             str(tmp_dir / "database.db"),
             "--image_path",
@@ -351,9 +408,14 @@ def main(is_loading, progress_callback=None) -> int:
             str(os.cpu_count() or 1),
             "--Mapper.max_model_overlap",
             "30",
-            "--Mapper.ba_refine_principal_point", "1",
             "--Mapper.ba_global_max_refinements","20",
-            "--Mapper.tri_min_angle","0.01", 
+            "--Mapper.init_min_num_inliers", "50",
+            "--Mapper.min_num_matches", "10",
+            "--Mapper.tri_min_angle", "0.5",
+            "--Mapper.ba_global_max_num_iterations", "150",
+            "--Mapper.ba_local_max_num_iterations","50",
+            "--Mapper.filter_max_reproj_error", "2",
+            "--Mapper.max_reg_trials", "10",
         ]
         run_step(
             "mapper",

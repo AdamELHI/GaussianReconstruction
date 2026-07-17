@@ -58,7 +58,11 @@ class AppController:
             self.view,
             "Select a video",
             "",
+<<<<<<< HEAD
+            "Video (*.mp4 *.avi *.mov *.mkv *.webm)",
+=======
             "Video Files (*.mp4 *.avi *.mov *.mkv *.webm)",
+>>>>>>> 6e9e649 (WIP Commit)
         )
         if not file_path:
             return
@@ -72,7 +76,7 @@ class AppController:
         file_path, _ = QFileDialog.getSaveFileName(
             self.view,
             "Select .ply file ",
-            "/home/ubuntu/Stage/output",
+            "",
             "PLY Files (*.ply)",
         )
         if not file_path:
