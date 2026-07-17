@@ -58,7 +58,7 @@ class AppController:
             self.view,
             "Select a video",
             "",
-            "Vidéos (*.mp4 *.avi *.mov *.mkv *.webm)",
+            "Video (*.mp4 *.avi *.mov *.mkv *.webm)",
         )
         if not file_path:
             return
@@ -66,7 +66,7 @@ class AppController:
         self.view.set_input_path(file_path)
         if not self.view.get_output_path():
             self.view.set_output_path(str(Path(file_path).with_suffix(".ply")))
-        self.view.set_status(f"Vidéo selectionnée : {file_path}")
+        self.view.set_status(f"Video selected: {file_path}")
 
     def select_output_file(self):
         file_path, _ = QFileDialog.getSaveFileName(
@@ -79,7 +79,7 @@ class AppController:
             return
 
         self.view.set_output_path(file_path)
-        self.view.set_status(f"Fichier de sortie défini : {file_path}")
+        self.view.set_status(f"Ouput path : {file_path}")
 
     def run_reconstruction(self):
         if self.reconstruction_thread and self.reconstruction_thread.isRunning():

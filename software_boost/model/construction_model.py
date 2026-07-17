@@ -103,7 +103,7 @@ class ConstructionModel:
         else:
             if exit_code == 0 and destination.exists():
                 if progress_callback:
-                    progress_callback("Le fichier 3D final a été créé.")
+                    progress_callback("Final 3D File has been created.")
                 result = {
                     "success": True,
                     "placeholder": False,

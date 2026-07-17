@@ -61,9 +61,8 @@ def resolve_brush(progress_callback=None) -> str:
     for candidate in candidates:
         if candidate and Path(candidate).expanduser().is_file():
             return str(Path(candidate).expanduser())
-    repo = Path(__file__).resolve().parent / "brush"
-    if not repo.is_file():
-        raise FileNotFoundError("Brush executable not found")
+
+    raise FileNotFoundError("Brush executable not found")
 
 
 
@@ -137,7 +136,7 @@ def align_ply(ply_path: Path, progress_callback=None) -> None:
             ],
             progress_callback=progress_callback,
             user_message="Centring the 3D model to make it easier to view.",
-            done_message="Modèle 3D recentré.",
+            done_message="Centred 3D model .",
         )
         os.replace(tmp_path, ply_path)
     finally:
