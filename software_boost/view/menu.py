@@ -31,7 +31,7 @@ class Menu(QMainWindow):
         self.top_bar_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.settings_button = QPushButton("⚙")
         self.settings_button.setFixedWidth(50)
-        self.load_reconstruct_button = QPushButton("Charger un .ply")
+        self.load_reconstruct_button = QPushButton("Load a .ply file")
         self.close_button = QPushButton("X")
         self.close_button.setFixedWidth(50)
         self.top_bar_layout.addWidget(self.settings_button)
@@ -43,36 +43,36 @@ class Menu(QMainWindow):
         self.content_layout = QVBoxLayout()
         self.content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-#Labels et boutons pour selectionner les fichiers d'entrée et de sortie, lancer la reconstruction, charger une reconstruction, afficher le status et la barre de progression (progression + log à faire)
+#Labels and buttons to select input and output files, start the reconstruction, load a reconstruction, display the status and the progress bar (progress + log to be added)
 
-        self.input_label = QLabel("Vidéo : Aucune vidéo sélectionnée")
+        self.input_label = QLabel("Video : No video selected")
         self.input_label.setWordWrap(True)
-        self.output_label = QLabel("Sortie : Aucun chemin sélectionné")
+        self.output_label = QLabel("Output : No path selected")
         self.output_label.setWordWrap(True)
 
-        self.select_video_button = QPushButton("Sélectionner une vidéo")
+        self.select_video_button = QPushButton("Select a video")
         self.select_video_button.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
         )
-        self.select_output_button = QPushButton("Choisir le chemin d'exportation de la reconstruction")
+        self.select_output_button = QPushButton("Select the export path for the reconstruction")
         self.select_output_button.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
         )
-        self.run_button = QPushButton("Lancer la reconstruction")
+        self.run_button = QPushButton("Launch the reconstruction")
         self.run_button.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding,
         )
-        self.load_button = QPushButton("Charger une reconstruction")
+        self.load_button = QPushButton("Load a reconstruction")
         self.load_button.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
         )
 
 
-        self.status_label = QLabel("Aucune reconstruction lancée.")
+        self.status_label = QLabel("No reconstruction launched.")
         self.status_label.setWordWrap(True)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -88,7 +88,7 @@ class Menu(QMainWindow):
         self.progress_log = QPlainTextEdit()
         self.progress_log.setReadOnly(True)
         self.progress_log.setPlaceholderText(
-            "Les étapes de reconstruction apparaitront ici."
+            "The steps of reconstruction will be shown here."
         )
         self.progress_log.setMinimumHeight(180)
         self.progress_log.setSizePolicy(
@@ -111,16 +111,16 @@ class Menu(QMainWindow):
     def set_input_path(self, path: str) -> None:
         self.input_path = path
         if path:
-            self.input_label.setText(f"Vidéo : {path}")
+            self.input_label.setText(f"Video : {path}")
         else:
-            self.input_label.setText("Vidéo : Aucune vidéo sélectionnée")
+            self.input_label.setText("Video : No video selected")
 
     def set_output_path(self, path: str) -> None:
         self.output_path = path
         if path:
-            self.output_label.setText(f"Sortie : {path}")
+            self.output_label.setText(f"Output : {path}")
         else:
-            self.output_label.setText("Sortie : Aucun fichier de sortie")
+            self.output_label.setText("Output : No path selected")
 
     def set_status(self, message: str) -> None:
         self.status_label.setText(message)
@@ -146,10 +146,10 @@ class Menu(QMainWindow):
         self.close_button.setEnabled(not is_running)
 
         if is_running:
-            self.run_button.setText("Reconstruction en cours...")
+            self.run_button.setText("Reconstruction in progress...")
             self.progress_bar.setRange(0, 0)
         else:
-            self.run_button.setText("Lancer la reconstruction")
+            self.run_button.setText("Launch the reconstruction")
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
 

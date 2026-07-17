@@ -56,7 +56,7 @@ class AppController:
     def select_input_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self.view,
-            "Sélectionner une vidéo",
+            "Select a video",
             "",
             "Vidéos (*.mp4 *.avi *.mov *.mkv *.webm)",
         )
@@ -71,7 +71,7 @@ class AppController:
     def select_output_file(self):
         file_path, _ = QFileDialog.getSaveFileName(
             self.view,
-            "Choisir le fichier .ply",
+            "Select .ply file ",
             "",
             "PLY Files (*.ply)",
         )
@@ -85,8 +85,8 @@ class AppController:
         if self.reconstruction_thread and self.reconstruction_thread.isRunning():
             QMessageBox.information(
                 self.view,
-                "Reconstruction en cours",
-                "Une reconstruction est déjà en cours.",
+                "Reconstruction in progress",
+                "Reconstruction is already underway. Please wait for it to finish before starting a new one.",
             )
             return
 
@@ -95,8 +95,8 @@ class AppController:
         if not input_path:
             QMessageBox.warning(
                 self.view,
-                "Vidéo manquante",
-                "Sélectionnez une vidéo avant de lancer la reconstruction.",
+                "Missing video",
+                "Select a video before launching the reconstruction.",
             )
             return
 
@@ -104,7 +104,7 @@ class AppController:
         self.view.set_reconstruction_running(True)
         self.view.set_status("Reconstruction en cours...")
         self.view.add_progress_message(
-            "Démarrage de la reconstruction à partir de la vidéo sélectionnée."
+            "Lauching the reconstruction from the selected video."
         )
 
         self.reconstruction_thread = QThread()
@@ -145,30 +145,30 @@ class AppController:
 
         if result.get("placeholder"):
             self.view.add_progress_message(
-                "La reconstruction n'a pas pu aller au bout. Un fichier de secours a été créé."
+                "The reconstruction could not be completed. A backup file has been created"
             )
             QMessageBox.information(
                 self.view,
-                "Reconstruction partielle",
+                "Partial reconstruction",
                 result["message"],
             )
         else:
             self.view.add_progress_message(
-                "Reconstruction terminée. Le fichier 3D est prêt."
+                "Reconstruction completed. The 3D file is finished."
             )
             QMessageBox.information(
                 self.view,
-                "Reconstruction terminée",
+                "Reconstruction completed",
                 result["message"],
             )
 
     def handle_reconstruction_failed(self, message):
         self.view.set_reconstruction_running(False)
-        self.view.set_status("Erreur de reconstruction.")
+        self.view.set_status("Error of reconstruction.")
         self.view.add_progress_message(
-            "La reconstruction s'est arrêtée avant de pouvoir créer le fichier 3D."
+            "The reconstruction stopped before being able to create the 3D file."
         )
-        QMessageBox.critical(self.view, "Erreur de reconstruction", message)
+        QMessageBox.critical(self.view, "Error of reconstruction", message)
 
     def clear_reconstruction_worker(self):
         self.reconstruction_thread = None
@@ -177,7 +177,7 @@ class AppController:
     def load_reconstruction(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self.view,
-            "Charger une reconstruction",
+            "Loading a reconstruction",
             "",
             "PLY Files (*.ply)",
         )
@@ -188,12 +188,12 @@ class AppController:
             result = self.model.load_reconstruction(file_path)
             model.run_processing.load(result["path"])
         except Exception as exc:
-            QMessageBox.critical(self.view, "Erreur de chargement", str(exc))
+            QMessageBox.critical(self.view, "Error of loading", str(exc))
             return
 
         self.view.set_output_path(file_path)
         self.view.set_status(result["message"])
-        QMessageBox.information(self.view, "Reconstruction chargée", result["message"])
+        QMessageBox.information(self.view, "Reconstruction loaded", result["message"])
 
 
     def open_settings(self):
@@ -203,7 +203,7 @@ class AppController:
 
         self.reconstruction_parameters = dialog.get_parameters()
         self.view.set_status(
-            "Paramètres appliqués : "
+            "Parameters applied  : "
             f"{self.reconstruction_parameters['fps']} fps, "
             f"{self.reconstruction_parameters['total_train_iters']} iterations."
         )

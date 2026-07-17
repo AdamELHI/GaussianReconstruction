@@ -53,7 +53,7 @@ class ConstructionModel:
         destination.parent.mkdir(parents=True, exist_ok=True)
 
         if progress_callback:
-            progress_callback("Préparation du dossier de sortie.")
+            progress_callback("Preparing the release file.")
 
         try:
             import model.run_processing
@@ -73,7 +73,7 @@ class ConstructionModel:
         except (FileNotFoundError, ModuleNotFoundError, ImportError) as exc:
             if progress_callback:
                 progress_callback(
-                    "Un outil nécessaire manque. Création d'un fichier de secours."
+                    "A necessary tool is missing. Creating a backup file."
                 )
             self.write_placeholder_ply(destination, str(exc))
             result = {
@@ -88,7 +88,7 @@ class ConstructionModel:
         except Exception as exc:
             if progress_callback:
                 progress_callback(
-                    "Une erreur a interrompu le calcul. Création d'un fichier de secours."
+                    "An error has interrupted the calculation. A backup file is being created."
                 )
             self.write_placeholder_ply(destination, str(exc))
             result = {
@@ -113,7 +113,7 @@ class ConstructionModel:
             else:
                 if progress_callback:
                     progress_callback(
-                        "Le calcul s'est terminé sans fichier 3D utilisable. Creation d'un fichier de secours."
+                        "The calculation finished without producing a usable 3D file. Creating a backup file."
                     )
                 self.write_placeholder_ply(
                     destination,

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 
 from __future__ import annotations
 import argparse
@@ -62,20 +62,8 @@ def resolve_brush(progress_callback=None) -> str:
         if candidate and Path(candidate).expanduser().is_file():
             return str(Path(candidate).expanduser())
     repo = Path(__file__).resolve().parent / "brush"
-    if repo.is_dir():
-        print("Building Brush because no binary was found...", flush=True)
-        run_step(
-            "build brush",
-            ["cargo", "build", "-p", "brush-app"],
-            cwd=repo,
-            progress_callback=progress_callback,
-            user_message="Compilation de Brush, car aucun executable pret n'a ete trouve.",
-            done_message="Brush est compile et pret a etre utilise.",
-        )
-        built = repo / "target" / "debug" / "brush"
-        if built.is_file():
-            return str(built)
-    raise FileNotFoundError("Brush executable not found")
+    if not repo.is_file():
+        raise FileNotFoundError("Brush executable not found")
 
 
 
@@ -148,7 +136,7 @@ def align_ply(ply_path: Path, progress_callback=None) -> None:
                 "-w",
             ],
             progress_callback=progress_callback,
-            user_message="Recentrage du modèle 3D pour faciliter son affichage.",
+            user_message="Centring the 3D model to make it easier to view.",
             done_message="Modèle 3D recentré.",
         )
         os.replace(tmp_path, ply_path)
@@ -180,7 +168,7 @@ def main(is_loading, progress_callback=None) -> int:
 
     emit_progress(
         progress_callback,
-        "Vérification de la vidéo et préparation du dossier de sortie.",
+        "Checking the video and preparing the output folder.",
     )
 
     
@@ -208,7 +196,7 @@ def main(is_loading, progress_callback=None) -> int:
     images_dir.mkdir(parents=True, exist_ok=True)
     emit_progress(
         progress_callback,
-        "Préparation du dossier temporaire pour les images de travail.",
+        "Setting up the temporary folder for source images.",
     )
 
     ffmpeg_cmd = ["ffmpeg", "-i", str(input_path)]
@@ -229,7 +217,7 @@ def main(is_loading, progress_callback=None) -> int:
 
     emit_progress(
         progress_callback,
-        "Vérification des outils nécessaires a la reconstruction.",
+        "Checking the dependencies required for the reconstruction.",
     )
     colmap = resolve_colmap()
     brush = resolve_brush(progress_callback)
@@ -243,11 +231,11 @@ def main(is_loading, progress_callback=None) -> int:
             "brush",
             brush_args,
             progress_callback=progress_callback,
-            user_message="Ouverture du fichier 3D dans le visualiseur.",
-            done_message="Visualisation terminée.",
+            user_message="Opening the 3D file in the viewer.",
+            done_message="Visualization is completed.",
         )
     else :     
-        print("Les prochaines étapes d'éxécution sont :")
+        print("The next steps in the implementation process are :")
         print("  1. Extracting frames from video (ffmpeg)")
         print("  2. COLMAP feature extraction")
         print("  3. COLMAP sequential matching")
@@ -260,8 +248,8 @@ def main(is_loading, progress_callback=None) -> int:
             "ffmpeg",
             ffmpeg_cmd,
             progress_callback=progress_callback,
-            user_message="Extraction d'images depuis la vidéo.",
-            done_message="Images extraites depuis la vidéo.",
+            user_message="Extracting images from the video.",
+            done_message="Images extracted from the video.",
         )
 
 
@@ -296,8 +284,8 @@ def main(is_loading, progress_callback=None) -> int:
             "feature_extractor",
             feature_args,
             progress_callback=progress_callback,
-            user_message="Recherche des points reconnaissables dans chaque image.",
-            done_message="Points importants detectés dans les images.",
+            user_message="Searching for recognizable points in each image.",
+            done_message="Important points detected in the images.",
         )
 
 
@@ -341,8 +329,8 @@ def main(is_loading, progress_callback=None) -> int:
             "sequential_matcher",
             matcher_args,
             progress_callback=progress_callback,
-            user_message="Comparaison des images entre elles pour retrouver le mouvement de la camera.",
-            done_message="Images reliées entre elles.",
+            user_message="Comparing images to find camera movement.",
+            done_message="Images linked together.",
         )
 
         #Colmap Mapping 
@@ -372,8 +360,8 @@ def main(is_loading, progress_callback=None) -> int:
             "mapper",
             mapper_args,
             progress_callback=progress_callback,
-            user_message="Construction d'une première structure 3D a partir des images.",
-            done_message="Structure 3D de base construite.",
+            user_message="Construction of an initial 3D structure from the images.",
+            done_message="Basic 3D structure constructed.",
         )
 
         # Brush training (gaussian) and export
@@ -395,8 +383,8 @@ def main(is_loading, progress_callback=None) -> int:
             "brush",
             brush_args,
             progress_callback=progress_callback,
-            user_message="Entrainement du modèle 3D avec Brush. Cette etape peut durer longtemps.",
-            done_message="Brush a exporté un premier fichier 3D.",
+            user_message="Training the 3D model with Brush. This step can take a long time.",
+            done_message="Brush has exported the first 3D file.",
         )
 
         ply_path = output_dir / output_name
@@ -425,14 +413,14 @@ def main(is_loading, progress_callback=None) -> int:
                     "-w",
                 ],
                 progress_callback=progress_callback,
-                user_message="Nettoyage des points presque invisibles dans le fichier 3D.",
-                done_message="Fichier 3D nettoyé.",
+                user_message="Cleaning transparent points in the 3D file.",
+                done_message="3D file cleaned.",
             )
             os.replace(temp_ply_path, ply_path)
         else:
             emit_progress(
                 progress_callback,
-                "Nettoyage optionnel ignore, l'outil correspondant n'est pas disponible.",
+                "Optional cleaning is ignored; the relevant tool is not available.",
             )
 
         if not args.skip_align and splat_transform:
@@ -440,15 +428,15 @@ def main(is_loading, progress_callback=None) -> int:
         elif args.skip_align:
             emit_progress(
                 progress_callback,
-                "Alignement final ignore selon les paramètres choisis.",
+                "Final alignment is skipped according to the chosen parameters.",
             )
 
         if not args.keep_temp:
-            emit_progress(progress_callback, "Suppression des fichiers temporaires.")
+            emit_progress(progress_callback, "Deleting temporary files.")
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
         print(f"Done: {ply_path}", flush=True)
-        emit_progress(progress_callback, "Traitement terminé.")
+        emit_progress(progress_callback, "Processing completed.")
         return 0
 
 

@@ -9,7 +9,7 @@ CONSTRUCT_FILE_VERSION = 1
 
 
 def save_construction_file(path, session_state):
-    """Enregistre une session  compressée avec pickle."""
+    """Saves a session compressed using pickle."""
     destination = Path(path)
     temporary_path = Path(f"{destination}.tmp")
     document = {
@@ -29,18 +29,18 @@ def save_construction_file(path, session_state):
 
 
 def load_construction_file(path):
-    """Charge une session CONSTRUCT créée par save_construction_file."""
+    """Loads a CONSTRUCT session created by save_construction_file."""
     with gzip.open(path, "rb") as file:
         document = pickle.load(file)
-
+    
     if not isinstance(document, dict):
-        raise ValueError("Le fichier ne contient pas un dictionnaire valide")
+        raise ValueError("The file does not contain a valid dictionary")
     if document.get("format") != CONSTRUCT_FILE_FORMAT:
-        raise ValueError("Ce fichier n'est pas une session ")
+        raise ValueError("The file is not a CONSTRUCT session")
     if document.get("version") != CONSTRUCT_FILE_VERSION:
-        raise ValueError("Cette version du fichier  n'est pas supportée")
+        raise ValueError("This version of the file  is not supported")
 
     session = document.get("session")
     if not isinstance(session, dict):
-        raise ValueError("La session est invalide")
+        raise ValueError("The session is invalid")
     return session

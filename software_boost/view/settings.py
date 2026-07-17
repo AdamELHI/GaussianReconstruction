@@ -25,7 +25,7 @@ class Settings(QDialog):
     def __init__(self, parameters=None, parent=None):
         super().__init__(parent)
 
-        self.setWindowTitle("Paramètres de reconstruction")
+        self.setWindowTitle("Settings of the reconstruction")
         self.resize(420, 260)
 
         self.parameters = self.DEFAULT_PARAMETERS.copy()
@@ -44,11 +44,11 @@ class Settings(QDialog):
         self.fps_input.setValue(float(self.parameters["fps"]))
 
         self.start_time_input = QLineEdit()
-        self.start_time_input.setPlaceholderText("Optionnel, ex: 00:00:10")
+        self.start_time_input.setPlaceholderText("Optional, format : 00:00:10")
         self.start_time_input.setText(self.parameters["start_time"] or "")
-
+    
         self.end_time_input = QLineEdit()
-        self.end_time_input.setPlaceholderText("Optionnel, ex: 00:01:30")
+        self.end_time_input.setPlaceholderText("Optional, format : 00:01:30")
         self.end_time_input.setText(self.parameters["end_time"] or "")
 
         self.total_train_iters_input = QSpinBox()
@@ -58,21 +58,21 @@ class Settings(QDialog):
             int(self.parameters["total_train_iters"])
         )
 
-        run_form.addRow("Images par seconde :", self.fps_input)
-        run_form.addRow("Debut vidéo :", self.start_time_input)
-        run_form.addRow("Fin vidéo :", self.end_time_input)
-        run_form.addRow("Itérations Brush :", self.total_train_iters_input)
+        run_form.addRow("Frames per second :", self.fps_input)
+        run_form.addRow("Start of the video :", self.start_time_input)
+        run_form.addRow("End of the video :", self.end_time_input)
+        run_form.addRow("Brush Iterations :", self.total_train_iters_input)
 
         options_group = QGroupBox("Options")
         options_layout = QVBoxLayout(options_group)
 
-        self.use_gpu_checkbox = QCheckBox("Utiliser le GPU si disponible")
+        self.use_gpu_checkbox = QCheckBox("Use the GPU if available")
         self.use_gpu_checkbox.setChecked(bool(self.parameters["use_gpu"]))
 
-        self.keep_temp_checkbox = QCheckBox("Conserver le dossier temporaire")
+        self.keep_temp_checkbox = QCheckBox("Keep the temporary directory")
         self.keep_temp_checkbox.setChecked(bool(self.parameters["keep_temp"]))
 
-        self.skip_align_checkbox = QCheckBox("Skip l'alignement PCA")
+        self.skip_align_checkbox = QCheckBox("Skip PCA alignment (not recommended)")
         self.skip_align_checkbox.setChecked(bool(self.parameters["skip_align"]))
 
         options_layout.addWidget(self.use_gpu_checkbox)
@@ -84,10 +84,10 @@ class Settings(QDialog):
             | QDialogButtonBox.StandardButton.Cancel
         )
         self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText(
-            "Appliquer"
+            "Apply"
         )
         self.button_box.button(QDialogButtonBox.StandardButton.Cancel).setText(
-            "Annuler"
+            "Cancel"
         )
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
