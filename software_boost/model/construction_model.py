@@ -39,7 +39,7 @@ class ConstructionModel:
         fps: float = 1.0,
         start_time: str | None = None,
         end_time: str | None = None,
-        total_train_iters: int = 5000,
+        total_train_iters: int = 7000,
         use_gpu: bool = True,
         keep_temp: bool = True,
         skip_align: bool = False,

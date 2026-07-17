@@ -3,7 +3,6 @@
 from __future__ import annotations
 import argparse
 import os
-import cv2 as cv 
 import shutil
 import subprocess
 import sys
@@ -32,10 +31,7 @@ def run_step(
         emit_progress(progress_callback, user_message)
     print(f"\n==> {label}", flush=True)
     print("$ " + " ".join(cmd), flush=True)
-    env = os.environ.copy() # conflit entre opencv et colmap : colmap ne peut pas utiliser les plugins QT d'opencv, donc on les supprime de l'environnement pour colmap
-    env.pop("QT_PLUGIN_PATH", None) 
-    env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
-    subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True,env=env)
+    subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True)
     if done_message:
         emit_progress(progress_callback, done_message)
 
@@ -82,12 +78,6 @@ def resolve_brush(progress_callback=None) -> str:
     raise FileNotFoundError("Brush executable not found")
 
 
-def colmap_has_cuda() -> bool:
-    try:
-        return True
-    except subprocess.CalledProcessError:
-        return False
-    return "without CUDA" not in help_text
 
 
 def splat_transform_executable() -> str:
@@ -158,8 +148,8 @@ def align_ply(ply_path: Path, progress_callback=None) -> None:
                 "-w",
             ],
             progress_callback=progress_callback,
-            user_message="Recentrage du modele 3D pour faciliter son affichage.",
-            done_message="Modele 3D recentre.",
+            user_message="Recentrage du modèle 3D pour faciliter son affichage.",
+            done_message="Modèle 3D recentré.",
         )
         os.replace(tmp_path, ply_path)
     finally:
@@ -190,7 +180,7 @@ def main(is_loading, progress_callback=None) -> int:
 
     emit_progress(
         progress_callback,
-        "Verification de la video et preparation du dossier de sortie.",
+        "Vérification de la vidéo et préparation du dossier de sortie.",
     )
 
     
@@ -218,7 +208,7 @@ def main(is_loading, progress_callback=None) -> int:
     images_dir.mkdir(parents=True, exist_ok=True)
     emit_progress(
         progress_callback,
-        "Preparation du dossier temporaire pour les images de travail.",
+        "Préparation du dossier temporaire pour les images de travail.",
     )
 
     ffmpeg_cmd = ["ffmpeg", "-i", str(input_path)]
@@ -239,7 +229,7 @@ def main(is_loading, progress_callback=None) -> int:
 
     emit_progress(
         progress_callback,
-        "Verification des outils necessaires a la reconstruction.",
+        "Vérification des outils nécessaires a la reconstruction.",
     )
     colmap = resolve_colmap()
     brush = resolve_brush(progress_callback)
@@ -254,50 +244,28 @@ def main(is_loading, progress_callback=None) -> int:
             brush_args,
             progress_callback=progress_callback,
             user_message="Ouverture du fichier 3D dans le visualiseur.",
-            done_message="Visualisation terminee.",
+            done_message="Visualisation terminée.",
         )
     else :     
-
-
-
-        if args.dry_run:
-            print("Dry run only. The following steps would be executed:")
-            print("  1. ffmpeg")
-            print("  2. COLMAP feature extraction")
-            print("  3. COLMAP sequential matching")
-            print("  4. COLMAP mapper")
-            print("  5. Brush training/export")
-            print("  6. Optional splat-transform cleanup/alignment")
-            return 0
-        """
+        print("Les prochaines étapes d'éxécution sont :")
+        print("  1. Extracting frames from video (ffmpeg)")
+        print("  2. COLMAP feature extraction")
+        print("  3. COLMAP sequential matching")
+        print("  4. COLMAP mapper")
+        print("  5. Brush training/export")
+        print("  6. Optional splat-transform cleanup/alignment")
+    
+        
         run_step(
             "ffmpeg",
             ffmpeg_cmd,
             progress_callback=progress_callback,
-            user_message="Extraction d'images depuis la video.",
-            done_message="Images extraites depuis la video.",
+            user_message="Extraction d'images depuis la vidéo.",
+            done_message="Images extraites depuis la vidéo.",
         )
-        """
 
-        video_capture = cv.VideoCapture(str(input_path))
-        nb, success = 0, True
-        is_writing = False
-        snapshot_every = max(1, int(video_capture.get(cv.CAP_PROP_FPS) // args.frame_rate))
-        while success : 
-            success, image = video_capture.read()
-            if success and nb % snapshot_every == 0 :
-                is_writing = True
-                image_path = images_dir / f"frame_{nb:05d}.jpg"
-                while is_writing and success :
-                    if cv.Laplacian(image, cv.CV_64F).var() > 10:
-                        cv.imwrite(str(image_path), image)
-                        nb += 1
-                        is_writing = False 
-                    else : 
-                        print(f"Image {image_path} is blurry, skipping.")
-                        success, image = video_capture.read()
-        
 
+        # COLMAP feature extraction 
 
         feature_args = [
             colmap,
@@ -319,18 +287,23 @@ def main(is_loading, progress_callback=None) -> int:
             "--SiftExtraction.num_threads",
             str(os.cpu_count() or 1)
         ]
-        if args.use_gpu and colmap_has_cuda():
+        if args.use_gpu :
             feature_args.extend(["--SiftExtraction.use_gpu", "1"])
         else:
             feature_args.extend(["--SiftExtraction.use_gpu", "0"])
+
         run_step(
             "feature_extractor",
             feature_args,
             progress_callback=progress_callback,
             user_message="Recherche des points reconnaissables dans chaque image.",
-            done_message="Points importants detectes dans les images.",
+            done_message="Points importants detectés dans les images.",
         )
 
+
+        #Colmap Matching : 
+
+        #Sequential matching arguments
         matcher_args = [
             colmap,
             "sequential_matcher",
@@ -345,6 +318,7 @@ def main(is_loading, progress_callback=None) -> int:
             
         ]
 
+        #exhaustive_matching arguments
         matcher_args2 = [
             colmap,
             "exhaustive_matcher",
@@ -357,17 +331,21 @@ def main(is_loading, progress_callback=None) -> int:
         ]
 
 
-        if args.use_gpu and colmap_has_cuda():
+        if args.use_gpu : 
             matcher_args.extend(["--SiftMatching.use_gpu", "1"])
         else:
             matcher_args.extend(["--SiftMatching.use_gpu", "0"])
+        
+        
         run_step(
             "sequential_matcher",
             matcher_args,
             progress_callback=progress_callback,
             user_message="Comparaison des images entre elles pour retrouver le mouvement de la camera.",
-            done_message="Images reliees entre elles.",
+            done_message="Images reliées entre elles.",
         )
+
+        #Colmap Mapping 
 
         sparse_dir = tmp_dir / "sparse"
         sparse_dir.mkdir(parents=True, exist_ok=True)
@@ -394,18 +372,11 @@ def main(is_loading, progress_callback=None) -> int:
             "mapper",
             mapper_args,
             progress_callback=progress_callback,
-            user_message="Construction d'une premiere structure 3D a partir des images.",
+            user_message="Construction d'une première structure 3D a partir des images.",
             done_message="Structure 3D de base construite.",
         )
 
-        gui_args = [ colmap, "gui", "--import_path", str(tmp_dir), "--database_path", str(tmp_dir / "database.db"), "--image_path", str(images_dir) ]
-        """run_step(
-            "colmap gui",
-            gui_args,
-            progress_callback=progress_callback,
-            user_message="Lancement de l'interface utilisateur de COLMAP.",
-            done_message="Interface utilisateur de COLMAP terminee.",
-        )"""
+        # Brush training (gaussian) and export
 
         brush_args = [
             brush,
@@ -424,8 +395,8 @@ def main(is_loading, progress_callback=None) -> int:
             "brush",
             brush_args,
             progress_callback=progress_callback,
-            user_message="Entrainement du modele 3D avec Brush. Cette etape peut durer longtemps.",
-            done_message="Brush a exporte un premier fichier 3D.",
+            user_message="Entrainement du modèle 3D avec Brush. Cette etape peut durer longtemps.",
+            done_message="Brush a exporté un premier fichier 3D.",
         )
 
         ply_path = output_dir / output_name
@@ -436,6 +407,8 @@ def main(is_loading, progress_callback=None) -> int:
             splat_transform = splat_transform_executable()
         except FileNotFoundError:
             splat_transform = None
+
+        #splat_transform using PCA to align the exported splat (optional)
 
         if splat_transform:
             temp_ply = tempfile.NamedTemporaryFile(suffix=".ply", dir=str(output_dir), delete=False)
@@ -453,7 +426,7 @@ def main(is_loading, progress_callback=None) -> int:
                 ],
                 progress_callback=progress_callback,
                 user_message="Nettoyage des points presque invisibles dans le fichier 3D.",
-                done_message="Fichier 3D nettoye.",
+                done_message="Fichier 3D nettoyé.",
             )
             os.replace(temp_ply_path, ply_path)
         else:
@@ -467,7 +440,7 @@ def main(is_loading, progress_callback=None) -> int:
         elif args.skip_align:
             emit_progress(
                 progress_callback,
-                "Alignement final ignore selon les parametres choisis.",
+                "Alignement final ignore selon les paramètres choisis.",
             )
 
         if not args.keep_temp:
@@ -475,7 +448,7 @@ def main(is_loading, progress_callback=None) -> int:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
         print(f"Done: {ply_path}", flush=True)
-        emit_progress(progress_callback, "Traitement termine.")
+        emit_progress(progress_callback, "Traitement terminé.")
         return 0
 
 
@@ -522,7 +495,3 @@ def load(inputfile):
     return main(True)
 
 
-input_file = '/home/ubuntu/Stage/DATASETS/meetingroom.mp4'
-output_file = '/home/ubuntu/Stage/output/meetingroom.ply'
-
-run(input_file,output_file, fps=1.0, totaltrainiters=1000, usegpu=True, keeptemp=False, skipalign=False)
