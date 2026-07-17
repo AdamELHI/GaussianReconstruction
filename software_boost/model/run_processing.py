@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-
 import argparse
 import os
+import cv2 as cv 
 import shutil
 import subprocess
 import sys
@@ -32,7 +32,10 @@ def run_step(
         emit_progress(progress_callback, user_message)
     print(f"\n==> {label}", flush=True)
     print("$ " + " ".join(cmd), flush=True)
-    subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True)
+    env = os.environ.copy() # conflit entre opencv et colmap : colmap ne peut pas utiliser les plugins QT d'opencv, donc on les supprime de l'environnement pour colmap
+    env.pop("QT_PLUGIN_PATH", None) 
+    env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+    subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True,env=env)
     if done_message:
         emit_progress(progress_callback, done_message)
 
@@ -184,6 +187,7 @@ def main(is_loading, progress_callback=None) -> int:
     output_name = output_path.name
     output_dir.mkdir(parents=True, exist_ok=True)
 
+
     emit_progress(
         progress_callback,
         "Verification de la video et preparation du dossier de sortie.",
@@ -253,7 +257,7 @@ def main(is_loading, progress_callback=None) -> int:
             done_message="Visualisation terminee.",
         )
     else :     
-        
+
 
 
         if args.dry_run:
@@ -265,7 +269,7 @@ def main(is_loading, progress_callback=None) -> int:
             print("  5. Brush training/export")
             print("  6. Optional splat-transform cleanup/alignment")
             return 0
-
+        """
         run_step(
             "ffmpeg",
             ffmpeg_cmd,
@@ -273,6 +277,27 @@ def main(is_loading, progress_callback=None) -> int:
             user_message="Extraction d'images depuis la video.",
             done_message="Images extraites depuis la video.",
         )
+        """
+
+        video_capture = cv.VideoCapture(str(input_path))
+        nb, success = 0, True
+        is_writing = False
+        snapshot_every = max(1, int(video_capture.get(cv.CAP_PROP_FPS) // args.frame_rate))
+        while success : 
+            success, image = video_capture.read()
+            if success and nb % snapshot_every == 0 :
+                is_writing = True
+                image_path = images_dir / f"frame_{nb:05d}.jpg"
+                while is_writing and success :
+                    if cv.Laplacian(image, cv.CV_64F).var() > 10:
+                        cv.imwrite(str(image_path), image)
+                        nb += 1
+                        is_writing = False 
+                    else : 
+                        print(f"Image {image_path} is blurry, skipping.")
+                        success, image = video_capture.read()
+        
+
 
         feature_args = [
             colmap,
@@ -290,7 +315,7 @@ def main(is_loading, progress_callback=None) -> int:
             "--SiftExtraction.domain_size_pooling",
             "1",
             "--SiftExtraction.max_num_features",
-            "16384",
+            "32768",
             "--SiftExtraction.num_threads",
             str(os.cpu_count() or 1)
         ]
@@ -312,11 +337,25 @@ def main(is_loading, progress_callback=None) -> int:
             "--database_path",
             str(tmp_dir / "database.db"),
             "--SequentialMatching.overlap",
-            "10",
+            "30",
             "--SiftMatching.max_num_matches", "32768",
+            "--SiftMatching.max_distance", "1",
+            "--SiftMatching.guided_matching", "1",
+            "--SiftMatching.num_threads", str(os.cpu_count() or 1),
+            
+        ]
+
+        matcher_args2 = [
+            colmap,
+            "exhaustive_matcher",
+            "--database_path",
+            str(tmp_dir / "database.db"),
+            "--SiftMatching.max_num_matches", "32768",
+            "--SiftMatching.max_distance", "1",
             "--SiftMatching.guided_matching", "1",
             "--SiftMatching.num_threads", str(os.cpu_count() or 1),
         ]
+
 
         if args.use_gpu and colmap_has_cuda():
             matcher_args.extend(["--SiftMatching.use_gpu", "1"])
@@ -345,6 +384,11 @@ def main(is_loading, progress_callback=None) -> int:
             str(sparse_dir),
             "--Mapper.num_threads",
             str(os.cpu_count() or 1),
+            "--Mapper.max_model_overlap",
+            "30",
+            "--Mapper.ba_refine_principal_point", "1",
+            "--Mapper.ba_global_max_refinements","20",
+            "--Mapper.tri_min_angle","0.01", 
         ]
         run_step(
             "mapper",
@@ -353,6 +397,15 @@ def main(is_loading, progress_callback=None) -> int:
             user_message="Construction d'une premiere structure 3D a partir des images.",
             done_message="Structure 3D de base construite.",
         )
+
+        gui_args = [ colmap, "gui", "--import_path", str(tmp_dir), "--database_path", str(tmp_dir / "database.db"), "--image_path", str(images_dir) ]
+        """run_step(
+            "colmap gui",
+            gui_args,
+            progress_callback=progress_callback,
+            user_message="Lancement de l'interface utilisateur de COLMAP.",
+            done_message="Interface utilisateur de COLMAP terminee.",
+        )"""
 
         brush_args = [
             brush,
@@ -472,4 +525,4 @@ def load(inputfile):
 input_file = '/home/ubuntu/Stage/DATASETS/meetingroom.mp4'
 output_file = '/home/ubuntu/Stage/output/meetingroom.ply'
 
-#run(input_file,output_file, fps=1.0, totaltrainiters=1000, usegpu=True, keeptemp=False, skipalign=False)
+run(input_file,output_file, fps=1.0, totaltrainiters=1000, usegpu=True, keeptemp=False, skipalign=False)

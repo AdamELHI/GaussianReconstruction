@@ -41,7 +41,7 @@ class ConstructionModel:
         end_time: str | None = None,
         total_train_iters: int = 5000,
         use_gpu: bool = True,
-        keep_temp: bool = False,
+        keep_temp: bool = True,
         skip_align: bool = False,
         progress_callback: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
@@ -53,7 +53,7 @@ class ConstructionModel:
         destination.parent.mkdir(parents=True, exist_ok=True)
 
         if progress_callback:
-            progress_callback("Preparation du dossier de sortie.")
+            progress_callback("Préparation du dossier de sortie.")
 
         try:
             import model.run_processing
@@ -73,7 +73,7 @@ class ConstructionModel:
         except (FileNotFoundError, ModuleNotFoundError, ImportError) as exc:
             if progress_callback:
                 progress_callback(
-                    "Un outil necessaire manque. Creation d'un fichier de secours."
+                    "Un outil nécessaire manque. Création d'un fichier de secours."
                 )
             self.write_placeholder_ply(destination, str(exc))
             result = {
@@ -88,7 +88,7 @@ class ConstructionModel:
         except Exception as exc:
             if progress_callback:
                 progress_callback(
-                    "Une erreur a interrompu le calcul. Creation d'un fichier de secours."
+                    "Une erreur a interrompu le calcul. Création d'un fichier de secours."
                 )
             self.write_placeholder_ply(destination, str(exc))
             result = {
@@ -103,7 +103,7 @@ class ConstructionModel:
         else:
             if exit_code == 0 and destination.exists():
                 if progress_callback:
-                    progress_callback("Le fichier 3D final a ete cree.")
+                    progress_callback("Le fichier 3D final a été créé.")
                 result = {
                     "success": True,
                     "placeholder": False,
@@ -113,7 +113,7 @@ class ConstructionModel:
             else:
                 if progress_callback:
                     progress_callback(
-                        "Le calcul s'est termine sans fichier 3D utilisable. Creation d'un fichier de secours."
+                        "Le calcul s'est terminé sans fichier 3D utilisable. Creation d'un fichier de secours."
                     )
                 self.write_placeholder_ply(
                     destination,
