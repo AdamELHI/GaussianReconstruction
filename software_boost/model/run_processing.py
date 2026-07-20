@@ -289,7 +289,7 @@ def main(is_loading, progress_callback=None) -> int:
 
             if nb_frame >= next_snapshot:
 
-                while success:
+                while success :
 
                     gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
                     sharpness = cv.Laplacian(gray, cv.CV_64F).var()
@@ -412,8 +412,8 @@ def main(is_loading, progress_callback=None) -> int:
             "--Mapper.init_min_num_inliers", "50",
             "--Mapper.min_num_matches", "10",
             "--Mapper.tri_min_angle", "0.5",
-            "--Mapper.ba_global_max_num_iterations", "150",
-            "--Mapper.ba_local_max_num_iterations","50",
+            "--Mapper.ba_global_max_num_iterations", "15",
+            "--Mapper.ba_local_max_num_iterations","10",
             "--Mapper.filter_max_reproj_error", "2",
             "--Mapper.max_reg_trials", "10",
         ]
