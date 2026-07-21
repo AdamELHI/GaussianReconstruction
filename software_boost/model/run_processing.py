@@ -209,7 +209,7 @@ def align_ply(ply_path: Path, progress_callback=None) -> None:
 def get_frames_sharpness(
     video_capture, start_frame, end_frame, progress_callback=None
 ):
-    list_sharpness = []
+    list_sharpness,list_frame = [],[]
 
     current_pos = video_capture.get(cv.CAP_PROP_POS_FRAMES)
 
@@ -221,19 +221,20 @@ def get_frames_sharpness(
         )
         print(message)
         emit_progress(progress_callback, message)
-        success, image = video_capture.read()
+        success, frame = video_capture.read()
 
         if not success:
             break
 
-        gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
+        gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
         sharpness = cv.Laplacian(gray, cv.CV_64F).var()
 
         list_sharpness.append(sharpness)
+        list_frame.append(frame)
 
     video_capture.set(cv.CAP_PROP_POS_FRAMES, current_pos)
 
-    return np.asarray(list_sharpness)
+    return np.asarray(list_frame), np.asarray(list_sharpness)
 
 def main(is_loading, progress_callback=None) -> int:
     p = argparse.ArgumentParser(description="Run Opencv + COLMAP + Brush to reconstruct a 3D splat from a video")
@@ -340,7 +341,7 @@ def main(is_loading, progress_callback=None) -> int:
         if args.end_time:
             h, m, sec = map(int, args.end_time.split(":"))
             end_frame = int((h * 3600 + m * 60 + sec) * fps)
-        l_sharpness = get_frames_sharpness(
+        l_frame, l_sharpness = get_frames_sharpness(
             video_capture,
             nb_frame,
             end_frame,
@@ -350,33 +351,27 @@ def main(is_loading, progress_callback=None) -> int:
         print("score_mean =", score_mean)
         video_capture.set(cv.CAP_PROP_POS_FRAMES, nb_frame)
 
-        while nb_frame < end_frame:
 
-            success, image = video_capture.read()
-            if not success:
-                break
-
+        while nb_frame < end_frame :
             if nb_frame >= next_snapshot:
+                sharpness, image = l_sharpness[nb_frame], l_frame[nb_frame]
+                print(f"Frame {nb_frame}: sharpness={sharpness}")
 
-                while success :
+                image_path = images_dir / f"frame_{nb_saved:05d}.jpg"
+                cv.imwrite(str(image_path), image)
+                nb_saved += 1
 
-                    gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
-                    sharpness = cv.Laplacian(gray, cv.CV_64F).var()
+                interval = min(
+                        int((fps / args.frame_rate) * (sharpness / score_mean)),
+                        int(1.5 * fps / args.frame_rate)
+                    ) 
 
-                    print(f"Frame {nb_frame}: sharpness={sharpness}")
-                    image_path = images_dir / f"frame_{nb_saved:05d}.jpg"
-                    nb_saved +=1
-                    cv.imwrite(str(image_path), image)
-                    # Adapt interval in function of sharpness
-                    interval = min(int((fps / args.frame_rate)*(sharpness/score_mean)),1.5*fps//(args.frame_rate))
-                    print("interval =",interval)
-
-                    snapshot_every = max(1, interval)
-                    next_snapshot = nb_frame + snapshot_every
-                    break
+                snapshot_every = max(1, interval)
+                print("interval =", interval)
+                next_snapshot = nb_frame + snapshot_every
 
             nb_frame += 1
-        
+                
         print(f"{nb_saved} images extracted")
 
 

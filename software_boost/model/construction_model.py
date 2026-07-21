@@ -9,12 +9,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-def default_output_dir() -> Path:
-
-    return Path("/home/ubuntu/Stage/output")
 
 
-DEFAULT_OUTPUT_DIR = default_output_dir()
+
+DEFAULT_OUTPUT_DIR = Path("/home/ubuntu/Stage/output")
 
 
 class ConstructionModel:
