@@ -1,6 +1,9 @@
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
+from pathlib import Path
+
+from PySide6.QtCore import QObject, QStandardPaths, QThread, Qt, Signal, Slot
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 from model.construction_model import ConstructionModel, DEFAULT_OUTPUT_DIR
+from model.paths import DATASET_DIR
 import model.run_processing
 from view.settings import Settings
 
@@ -92,10 +95,19 @@ class AppController(QObject):
         self.view.close_button.clicked.connect(self.view.close)
 
     def select_input_file(self):
+        videos_directory = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.MoviesLocation
+        )
+        if videos_directory and Path(videos_directory).is_dir():
+            initial_directory = videos_directory
+        else:
+            DATASET_DIR.mkdir(parents=True, exist_ok=True)
+            initial_directory = str(DATASET_DIR)
+
         file_path, _ = QFileDialog.getOpenFileName(
             self.view,
             "Select a video",
-            "",
+            initial_directory,
             "Video Files (*.mp4 *.avi *.mov *.mkv *.webm)",
         )
         if not file_path:

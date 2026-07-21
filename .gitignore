@@ -32,6 +32,18 @@ MANIFEST
 *.manifest
 *.spec
 !Software/linux.spec
+!Software/windows.spec
+
+# Local Windows packaging environment
+Software/.venv-windows/
+
+# Downloaded tools and generated runtime data
+/Brush/
+/Colmap/
+/Ffmpeg/
+/Dataset/
+/Output/
+/LastReconstruction/
 
 # Installer logs
 pip-log.txt

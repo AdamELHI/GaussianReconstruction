@@ -18,15 +18,44 @@ from pathlib import Path
 import numpy as np
 from plyfile import PlyData
 from scipy.spatial.transform import Rotation
+if os.name == "nt":
+    import psutil
+
+from model.paths import (
+    BRUSH_DIR,
+    BUNDLED_BRUSH_DIR,
+    BUNDLED_COLMAP_DIR,
+    BUNDLED_TOOLS_DIR,
+    COLMAP_DIR,
+    LAST_RECONSTRUCTION_DIR,
+    find_executable,
+)
 
 
-PROJECT_DIR = Path(__file__).resolve().parents[2] #.../GaussianReconstruction
+BUNDLED_FFMPEG_DIR = BUNDLED_TOOLS_DIR / "ffmpeg"
 
-WORKSPACE_DIR = PROJECT_DIR.parent 
-if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-    BUNDLED_TOOLS_DIR = Path(sys._MEIPASS) / "tools" # .../GaussianReconstruction/_internal/tools
-else:
-    BUNDLED_TOOLS_DIR = None
+
+def colmap_qt_platform_plugin_dir() -> Path | None:
+    """Locate the Qt platform plugins shipped with the Windows COLMAP bundle."""
+    if os.name != "nt":
+        return None
+
+    for root in (BUNDLED_COLMAP_DIR, COLMAP_DIR):
+        for relative_path in (
+            Path("platforms"),
+            Path("plugins") / "platforms",
+            Path("bin") / "platforms",
+        ):
+            candidate = root / relative_path
+            if (candidate / "qwindows.dll").is_file():
+                return candidate
+
+        if root.is_dir():
+            plugin = next(root.rglob("qwindows.dll"), None)
+            if plugin is not None:
+                return plugin.parent
+
+    return None
 
 
 def find_tool(root: Path, candidates: tuple[Path, ...]) -> str | None:
@@ -147,11 +176,15 @@ class PauseManager:
             self._resume_event.clear()
             if os.name == "posix":
                 self._signal_process(signal.SIGSTOP)
+            elif os.name == "nt":
+                self._set_windows_process_suspended(True)
 
     def resume(self) -> None:
         with self._lock:
             if os.name == "posix":
                 self._signal_process(signal.SIGCONT)
+            elif os.name == "nt":
+                self._set_windows_process_suspended(False)
             self._resume_event.set()
 
     def wait_if_paused(self) -> None:
@@ -162,6 +195,8 @@ class PauseManager:
             self._process = process
             if self.is_paused and os.name == "posix":
                 self._signal_process(signal.SIGSTOP)
+            elif self.is_paused and os.name == "nt":
+                self._set_windows_process_suspended(True)
 
     def detach_process(self, process) -> None:
         with self._lock:
@@ -175,6 +210,28 @@ class PauseManager:
         try:
             os.killpg(process.pid, process_signal)
         except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    def _set_windows_process_suspended(self, suspended: bool) -> None:
+        process = self._process
+        if os.name != "nt" or process is None or process.poll() is not None:
+            return
+
+        try:
+            root_process = psutil.Process(process.pid)
+            child_processes = root_process.children(recursive=True)
+            processes = child_processes + [root_process]
+            if not suspended:
+                processes.reverse()
+            for child_process in processes:
+                try:
+                    if suspended:
+                        child_process.suspend()
+                    else:
+                        child_process.resume()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
 
 
@@ -234,17 +291,31 @@ def external_tool_environment() -> dict[str, str]:
     env.pop("QT_PLUGIN_PATH", None)
     env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
 
+    qt_platform_plugins = colmap_qt_platform_plugin_dir()
+    if qt_platform_plugins is not None:
+        env["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(qt_platform_plugins)
+
     search_paths = []
     library_paths = []
-    if BUNDLED_TOOLS_DIR is not None:
-        search_paths.extend(
-            [
-                BUNDLED_TOOLS_DIR / "colmap" / "bin",
-                BUNDLED_TOOLS_DIR / "brush",
-                BUNDLED_TOOLS_DIR / "ffmpeg",
-            ]
-        )
-        library_paths.append(BUNDLED_TOOLS_DIR / "colmap" / "lib")
+    search_paths.extend(
+        [
+            BUNDLED_COLMAP_DIR,
+            BUNDLED_COLMAP_DIR / "bin",
+            BUNDLED_COLMAP_DIR / "lib",
+            BUNDLED_BRUSH_DIR,
+            BUNDLED_FFMPEG_DIR,
+            COLMAP_DIR,
+            COLMAP_DIR / "bin",
+            COLMAP_DIR / "lib",
+            BRUSH_DIR,
+        ]
+    )
+    library_paths.extend(
+        [
+            BUNDLED_COLMAP_DIR / "lib",
+            COLMAP_DIR / "lib",
+        ]
+    )
 
     existing_search_paths = [str(path) for path in search_paths if path.is_dir()]
     if existing_search_paths:
@@ -253,7 +324,7 @@ def external_tool_environment() -> dict[str, str]:
         )
 
     existing_library_paths = [str(path) for path in library_paths if path.is_dir()]
-    if existing_library_paths:
+    if existing_library_paths and os.name == "posix":
         env["LD_LIBRARY_PATH"] = os.pathsep.join(
             existing_library_paths + [env.get("LD_LIBRARY_PATH", "")]
         )
@@ -278,6 +349,7 @@ def run_step(
     print(f"\n==> {label}", flush=True)
     print("$ " + " ".join(cmd), flush=True)
     env = external_tool_environment()
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
     try:
         process = subprocess.Popen(
@@ -290,6 +362,7 @@ def run_step(
             errors="replace",
             bufsize=1,
             start_new_session=os.name == "posix",
+            creationflags=creationflags,
         )
     except OSError as exc:
         emit_progress(
@@ -410,13 +483,12 @@ def resolve_ffmpeg_tool(name: str) -> str:
             f"{env_var} does not point to an executable file: {executable}"
         )
 
-    if BUNDLED_TOOLS_DIR is not None:
-        bundled = find_tool(
-            BUNDLED_TOOLS_DIR / "ffmpeg",
-            (Path(name), Path(f"{name}.exe")),
-        )
-        if bundled:
-            return bundled
+    bundled = find_executable(
+        BUNDLED_FFMPEG_DIR,
+        (f"{name}.exe", name),
+    )
+    if bundled:
+        return str(bundled)
 
     return resolve_executable([name, f"{name}.exe"])
 
@@ -477,11 +549,9 @@ def normalize_video_if_interlaced(
     print(field_order_message)
     emit_progress(progress_callback, field_order_message)
 
-    interlaced_orders = {"tt", "bb", "tb", "bt"}
-
-    if field_order not in interlaced_orders :
+    if field_order == "progressive":
         return input_path
-    
+
     normalized_path = tmp_dir / "progressive_input.mp4"
     run_step(
         "ffmpeg video normalization",
@@ -535,22 +605,11 @@ def resolve_colmap() -> str:
     if override:
         return override
 
-    if BUNDLED_TOOLS_DIR is not None:
-        bundled = find_tool(
-            BUNDLED_TOOLS_DIR / "colmap",
-            (Path("bin/colmap"), Path("colmap")),
-        )
-        if bundled:
-            return bundled
-
-    external = find_tool(
-        WORKSPACE_DIR / "Colmap",
-        (Path("bin/colmap"), Path("colmap")),
-    )
-    if external:
-        return external
-
-    return resolve_executable(["colmap"])
+    for root in (BUNDLED_COLMAP_DIR, COLMAP_DIR):
+        executable = find_executable(root, ("colmap.exe", "colmap"))
+        if executable:
+            return str(executable)
+    return resolve_executable(["colmap", "colmap.exe"])
 
 
 def colmap_supports_cuda(colmap_executable: str) -> bool:
@@ -706,25 +765,13 @@ def resolve_brush(progress_callback=None) -> str:
     if override and Path(override).expanduser().is_file():
         return str(Path(override).expanduser())
 
-    if BUNDLED_TOOLS_DIR is not None:
-        bundled = find_tool(
-            BUNDLED_TOOLS_DIR / "brush",
-            (Path("brush"), Path("brush-app")),
+    for root in (BUNDLED_BRUSH_DIR, BRUSH_DIR):
+        executable = find_executable(
+            root,
+            ("brush.exe", "brush-app.exe", "brush", "brush-app"),
         )
-        if bundled:
-            return bundled
-
-    external = find_tool(
-        WORKSPACE_DIR / "brush",
-        (
-            Path("target/release/brush"),
-            Path("target/release/brush-app"),
-            Path("target/debug/brush"),
-            Path("target/debug/brush-app"),
-        ),
-    )
-    if external:
-        return external
+        if executable:
+            return str(executable)
 
     discovered = shutil.which("brush") or shutil.which("brush-app")
     if discovered:
@@ -739,6 +786,12 @@ def splat_transform_executable() -> str:
     override = os.environ.get("SPLAT_TRANSFORM")
     if override:
         return override
+    bundled = find_executable(
+        BUNDLED_TOOLS_DIR / "splat-transform",
+        ("splat-transform.exe", "splat-transform.cmd", "splat-transform"),
+    )
+    if bundled:
+        return str(bundled)
     return resolve_executable(["splat-transform", "splat-transform.cmd", "splat-transform.exe"])
 
 
@@ -897,7 +950,7 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
 
 
 
-    tmp_dir = Path.cwd() / "tmp"
+    tmp_dir = LAST_RECONSTRUCTION_DIR
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir)
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -1063,9 +1116,9 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             "--ImageReader.camera_model",
             "SIMPLE_RADIAL",
             "--SiftExtraction.estimate_affine_shape",
-            "1",
+            "0",
             "--SiftExtraction.domain_size_pooling",
-            "1",
+            "0",
             "--SiftExtraction.peak_threshold", "0.003",
             "--SiftExtraction.max_num_features",
             str(max_num_features),
@@ -1294,6 +1347,7 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
                 pause_controller.wait_if_paused()
             emit_progress(progress_callback, "Deleting temporary files.")
             shutil.rmtree(tmp_dir, ignore_errors=True)
+            tmp_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"Done: {ply_path}", flush=True)
         emit_progress(progress_callback, "Processing completed.")

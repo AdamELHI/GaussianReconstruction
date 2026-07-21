@@ -1,28 +1,18 @@
 import math
-import os
 import re
 import sys
 
 from pathlib import Path
 from typing import Any, Callable
 
+from model.paths import OUTPUT_DIR
+
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-def default_output_directory() -> Path:
-    override = os.environ.get("GAUSSIAN_RECONSTRUCTION_OUTPUT_DIR")
-    if override:
-        return Path(override).expanduser().resolve()
-
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent / "Output"
-
-    return ROOT / "Output"
-
-
-DEFAULT_OUTPUT_DIR = default_output_directory()
+DEFAULT_OUTPUT_DIR = OUTPUT_DIR
 
 
 class ConstructionModel:
