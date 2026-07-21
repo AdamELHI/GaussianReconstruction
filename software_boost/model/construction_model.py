@@ -1,3 +1,4 @@
+import os
 import sys
 
 from pathlib import Path
@@ -8,6 +9,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+def default_output_dir() -> Path:
+
+    return Path("/home/ubuntu/Stage/output")
+
+
+DEFAULT_OUTPUT_DIR = default_output_dir()
+
+
 class ConstructionModel:
     def __init__(self):
         self.last_result: dict[str, Any] | None = None
@@ -16,7 +25,7 @@ class ConstructionModel:
         if output_path:
             return Path(output_path).expanduser()
         source = Path(input_path).expanduser()
-        return source.with_suffix(".ply")
+        return DEFAULT_OUTPUT_DIR / f"{source.stem}.ply"
 
     def write_placeholder_ply(self, output_path: Path, reason: str) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)

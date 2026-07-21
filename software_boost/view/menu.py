@@ -19,7 +19,7 @@ class Menu(QMainWindow):
         self.resize(1000, 700)
 
         self.input_path = ""
-        self.output_path = "/home/ubuntu/Stage/output"
+        self.output_path = ""
 
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
