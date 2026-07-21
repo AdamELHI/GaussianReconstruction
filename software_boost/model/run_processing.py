@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 import os
+import re
 import shutil
 import cv2 as cv
 import subprocess
@@ -26,6 +27,7 @@ def run_step(
     progress_callback=None,
     user_message: str | None = None,
     done_message: str | None = None,
+    output_callback=None,
 ) -> None:
     if user_message:
         emit_progress(progress_callback, user_message)
@@ -36,9 +38,65 @@ def run_step(
     env.pop("QT_PLUGIN_PATH", None)
     env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
 
-    subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True,env=env)
+    if output_callback is None:
+        subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True, env=env)
+    else:
+        process = subprocess.Popen(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            output_callback(line)
+        return_code = process.wait()
+        if return_code != 0:
+            raise subprocess.CalledProcessError(return_code, cmd)
     if done_message:
         emit_progress(progress_callback, done_message)
+
+
+def indexed_colmap_progress(progress_callback, stage: str, marker: str):
+    if progress_callback is None:
+        return None
+
+    pattern = re.compile(rf"{re.escape(marker)}\s+\[(\d+)/(\d+)\]")
+
+    def report(line: str) -> None:
+        match = pattern.search(line)
+        if match:
+            current, total = match.groups()
+            emit_progress(
+                progress_callback,
+                f"{stage}: {current}/{total} frames processed.",
+            )
+
+    return report
+
+
+def mapping_progress(progress_callback, total_frames: int):
+    if progress_callback is None:
+        return None
+
+    registering_pattern = re.compile(r"Registering image #(\d+)")
+    dealt_with: set[str] = set()
+
+    def report(line: str) -> None:
+        match = registering_pattern.search(line)
+        if match:
+            dealt_with.add(match.group(1))
+            emit_progress(
+                progress_callback,
+                f"Mapping: {len(dealt_with)}/{total_frames} frames dealt with.",
+            )
+
+    return report
 
 
 def resolve_executable(names: list[str], env_var: str | None = None) -> str:
@@ -148,7 +206,9 @@ def align_ply(ply_path: Path, progress_callback=None) -> None:
             tmp_path.unlink()
 
 
-def get_frames_sharpness(video_capture, start_frame, end_frame):
+def get_frames_sharpness(
+    video_capture, start_frame, end_frame, progress_callback=None
+):
     list_sharpness = []
 
     current_pos = video_capture.get(cv.CAP_PROP_POS_FRAMES)
@@ -156,7 +216,11 @@ def get_frames_sharpness(video_capture, start_frame, end_frame):
     video_capture.set(cv.CAP_PROP_POS_FRAMES, start_frame)
 
     for i in range(start_frame, end_frame):
-        print("listing_sharpness : frame"+str(i)+ "/"+ str (video_capture.get(cv.CAP_PROP_FRAME_COUNT))) 
+        message = (
+            f"Listing sharpness: frame {i}/{int(video_capture.get(cv.CAP_PROP_FRAME_COUNT))}"
+        )
+        print(message)
+        emit_progress(progress_callback, message)
         success, image = video_capture.read()
 
         if not success:
@@ -276,7 +340,12 @@ def main(is_loading, progress_callback=None) -> int:
         if args.end_time:
             h, m, sec = map(int, args.end_time.split(":"))
             end_frame = int((h * 3600 + m * 60 + sec) * fps)
-        l_sharpness = get_frames_sharpness(video_capture,nb_frame,end_frame)
+        l_sharpness = get_frames_sharpness(
+            video_capture,
+            nb_frame,
+            end_frame,
+            progress_callback=progress_callback,
+        )
         score_mean = l_sharpness.mean()
         print("score_mean =", score_mean)
         video_capture.set(cv.CAP_PROP_POS_FRAMES, nb_frame)
@@ -345,6 +414,11 @@ def main(is_loading, progress_callback=None) -> int:
             progress_callback=progress_callback,
             user_message="Searching for recognizable points in each image.",
             done_message="Important points detected in the images.",
+            output_callback=indexed_colmap_progress(
+                progress_callback,
+                "Feature extraction",
+                "Processed file",
+            ),
         )
 
 
@@ -388,6 +462,11 @@ def main(is_loading, progress_callback=None) -> int:
             progress_callback=progress_callback,
             user_message="Comparing images to find camera movement.",
             done_message="Images linked together.",
+            output_callback=indexed_colmap_progress(
+                progress_callback,
+                "Matching",
+                "Matching image",
+            ),
         )
 
         #Colmap Mapping 
@@ -423,6 +502,7 @@ def main(is_loading, progress_callback=None) -> int:
             progress_callback=progress_callback,
             user_message="Construction of an initial 3D structure from the images.",
             done_message="Basic 3D structure constructed.",
+            output_callback=mapping_progress(progress_callback, nb_saved),
         )
 
         # Brush training (gaussian) and export
