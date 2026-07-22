@@ -222,15 +222,13 @@ def get_frames_sharpness(
         print(message)
         emit_progress(progress_callback, message)
         success, frame = video_capture.read()
+        if success :
+            gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
+            sharpness = cv.Laplacian(gray, cv.CV_64F).var()
 
-        if not success:
-            break
+            list_sharpness.append(sharpness)
+            list_frame.append(frame)
 
-        gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
-        sharpness = cv.Laplacian(gray, cv.CV_64F).var()
-
-        list_sharpness.append(sharpness)
-        list_frame.append(frame)
 
     video_capture.set(cv.CAP_PROP_POS_FRAMES, current_pos)
 
