@@ -1,8 +1,6 @@
-from pathlib import Path
-
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 from PySide6.QtWidgets import QFileDialog, QMessageBox
-from model.construction_model import ConstructionModel
+from model.construction_model import ConstructionModel, DEFAULT_OUTPUT_DIR
 import model.run_processing
 from view.settings import Settings
 
@@ -39,6 +37,7 @@ class AppController:
     def __init__(self, view):
         self.view = view
         self.model = ConstructionModel()
+        self.output_selected_manually = False
         self.reconstruction_parameters = Settings.DEFAULT_PARAMETERS.copy()
         self.reconstruction_thread = None
         self.reconstruction_worker = None
@@ -58,27 +57,29 @@ class AppController:
             self.view,
             "Select a video",
             "",
-            "Video (*.mp4 *.avi *.mov *.mkv *.webm)",
+            "Video Files (*.mp4 *.avi *.mov *.mkv *.webm)",
         )
         if not file_path:
             return
 
         self.view.set_input_path(file_path)
-        if not self.view.get_output_path():
-            self.view.set_output_path(str(Path(file_path).with_suffix(".ply")))
+        if not self.output_selected_manually:
+            default_output = self.model.resolve_output_path(file_path, None)
+            self.view.set_output_path(str(default_output))
         self.view.set_status(f"Video selected: {file_path}")
 
     def select_output_file(self):
         file_path, _ = QFileDialog.getSaveFileName(
             self.view,
             "Select .ply file ",
-            "",
+            str(DEFAULT_OUTPUT_DIR),
             "PLY Files (*.ply)",
         )
         if not file_path:
             return
 
         self.view.set_output_path(file_path)
+        self.output_selected_manually = True
         self.view.set_status(f"Ouput path : {file_path}")
 
     def run_reconstruction(self):

@@ -3,12 +3,13 @@
 from __future__ import annotations
 import argparse
 import os
+import re
 import shutil
+import cv2 as cv
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-
 import numpy as np
 from plyfile import PlyData
 from scipy.spatial.transform import Rotation
@@ -26,14 +27,76 @@ def run_step(
     progress_callback=None,
     user_message: str | None = None,
     done_message: str | None = None,
+    output_callback=None,
 ) -> None:
     if user_message:
         emit_progress(progress_callback, user_message)
     print(f"\n==> {label}", flush=True)
     print("$ " + " ".join(cmd), flush=True)
-    subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True)
+    env = os.environ.copy()
+
+    env.pop("QT_PLUGIN_PATH", None)
+    env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+
+    if output_callback is None:
+        subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True, env=env)
+    else:
+        process = subprocess.Popen(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            output_callback(line)
+        return_code = process.wait()
+        if return_code != 0:
+            raise subprocess.CalledProcessError(return_code, cmd)
     if done_message:
         emit_progress(progress_callback, done_message)
+
+
+def indexed_colmap_progress(progress_callback, stage: str, marker: str):
+    if progress_callback is None:
+        return None
+
+    pattern = re.compile(rf"{re.escape(marker)}\s+\[(\d+)/(\d+)\]")
+
+    def report(line: str) -> None:
+        match = pattern.search(line)
+        if match:
+            current, total = match.groups()
+            emit_progress(
+                progress_callback,
+                f"{stage}: {current}/{total} frames processed.",
+            )
+
+    return report
+
+
+def mapping_progress(progress_callback, total_frames: int):
+    if progress_callback is None:
+        return None
+
+    registering_pattern = re.compile(r"Registering image #(\d+)")
+    dealt_with: set[str] = set()
+
+    def report(line: str) -> None:
+        match = registering_pattern.search(line)
+        if match:
+            dealt_with.add(match.group(1))
+            emit_progress(
+                progress_callback,
+                f"Mapping: {len(dealt_with)}/{total_frames} frames dealt with.",
+            )
+
+    return report
 
 
 def resolve_executable(names: list[str], env_var: str | None = None) -> str:
@@ -61,7 +124,6 @@ def resolve_brush(progress_callback=None) -> str:
     for candidate in candidates:
         if candidate and Path(candidate).expanduser().is_file():
             return str(Path(candidate).expanduser())
-
     raise FileNotFoundError("Brush executable not found")
 
 
@@ -144,8 +206,36 @@ def align_ply(ply_path: Path, progress_callback=None) -> None:
             tmp_path.unlink()
 
 
+def get_frames_sharpness(
+    video_capture, start_frame, end_frame, progress_callback=None
+):
+    list_sharpness,list_frame = [],[]
+
+    current_pos = video_capture.get(cv.CAP_PROP_POS_FRAMES)
+
+    video_capture.set(cv.CAP_PROP_POS_FRAMES, start_frame)
+
+    for i in range(start_frame, end_frame):
+        message = (
+            f"Listing sharpness: frame {i}/{int(video_capture.get(cv.CAP_PROP_FRAME_COUNT))}"
+        )
+        print(message)
+        emit_progress(progress_callback, message)
+        success, frame = video_capture.read()
+        if success :
+            gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
+            sharpness = cv.Laplacian(gray, cv.CV_64F).var()
+
+            list_sharpness.append(sharpness)
+            list_frame.append(frame)
+
+
+    video_capture.set(cv.CAP_PROP_POS_FRAMES, current_pos)
+
+    return np.asarray(list_frame), np.asarray(list_sharpness)
+
 def main(is_loading, progress_callback=None) -> int:
-    p = argparse.ArgumentParser(description="Run ffmpeg + COLMAP + Brush to reconstruct a 3D splat from a video")
+    p = argparse.ArgumentParser(description="Run Opencv + COLMAP + Brush to reconstruct a 3D splat from a video")
     p.add_argument("input_file", help="Absolute path to the input video file")
     p.add_argument("output_file", help="Absolute path for the exported .ply asset")
     p.add_argument("--frame-rate", type=float, default=5.0, help="Frames per second extracted from the video")
@@ -155,7 +245,6 @@ def main(is_loading, progress_callback=None) -> int:
     p.add_argument("--use-gpu", action="store_true", help="Enable GPU flags for COLMAP if CUDA is available")
     p.add_argument("--keep-temp", action="store_true", help="Keep the temporary COLMAP/Brush working directory")
     p.add_argument("--skip-align", action="store_true", help="Skip PCA alignment with splat-transform")
-    p.add_argument("--dry-run", action="store_true", help="Only validate the configuration and print commands")
     args = p.parse_args()
 
     input_path = Path(args.input_file).expanduser()
@@ -198,21 +287,7 @@ def main(is_loading, progress_callback=None) -> int:
         "Setting up the temporary folder for source images.",
     )
 
-    ffmpeg_cmd = ["ffmpeg", "-i", str(input_path)]
-    if args.start_time:
-        ffmpeg_cmd.extend(["-ss", args.start_time])
-    if args.end_time:
-        ffmpeg_cmd.extend(["-to", args.end_time])
-    ffmpeg_cmd.extend([
-        "-vf",
-        f"fps={args.frame_rate},scale=iw:ih:flags=lanczos",
-        "-c:v",
-        "mjpeg",
-        "-q:v",
-        "2",
-        "-y",
-        str(images_dir / "frame_%05d.jpg"),
-    ])
+
 
     emit_progress(
         progress_callback,
@@ -243,13 +318,59 @@ def main(is_loading, progress_callback=None) -> int:
         print("  6. Optional splat-transform cleanup/alignment")
     
         
-        run_step(
-            "ffmpeg",
-            ffmpeg_cmd,
+
+        video_capture = cv.VideoCapture(str(input_path))
+
+        nb_frame = 0
+        nb_saved = 0
+
+        fps = video_capture.get(cv.CAP_PROP_FPS)
+        end_frame = int(video_capture.get(cv.CAP_PROP_FRAME_COUNT))
+
+        snapshot_every = 1
+
+        if args.start_time:
+            h, m, sec = map(int, args.start_time.split(":"))
+            start_frame = int((h * 3600 + m * 60 + sec) * fps)
+            nb_frame = start_frame
+
+        next_snapshot = nb_frame
+
+        if args.end_time:
+            h, m, sec = map(int, args.end_time.split(":"))
+            end_frame = int((h * 3600 + m * 60 + sec) * fps)
+        l_frame, l_sharpness = get_frames_sharpness(
+            video_capture,
+            nb_frame,
+            end_frame,
             progress_callback=progress_callback,
-            user_message="Extracting images from the video.",
-            done_message="Images extracted from the video.",
         )
+        score_mean = l_sharpness.mean()
+        print("score_mean =", score_mean)
+        video_capture.set(cv.CAP_PROP_POS_FRAMES, nb_frame)
+
+
+        while nb_frame < end_frame :
+            if nb_frame >= next_snapshot:
+                sharpness, image = l_sharpness[nb_frame], l_frame[nb_frame]
+                print(f"Frame {nb_frame}: sharpness={sharpness}")
+
+                image_path = images_dir / f"frame_{nb_saved:05d}.jpg"
+                cv.imwrite(str(image_path), image)
+                nb_saved += 1
+
+                interval = min(
+                        int((fps / args.frame_rate) * (sharpness / score_mean)),
+                        int(1.5 * fps / args.frame_rate)
+                    ) 
+
+                snapshot_every = max(1, interval)
+                print("interval =", interval)
+                next_snapshot = nb_frame + snapshot_every
+
+            nb_frame += 1
+                
+        print(f"{nb_saved} images extracted")
 
 
         # COLMAP feature extraction 
@@ -269,6 +390,7 @@ def main(is_loading, progress_callback=None) -> int:
             "1",
             "--SiftExtraction.domain_size_pooling",
             "1",
+            "--SiftExtraction.peak_threshold", "0.003",
             "--SiftExtraction.max_num_features",
             "32768",
             "--SiftExtraction.num_threads",
@@ -285,6 +407,11 @@ def main(is_loading, progress_callback=None) -> int:
             progress_callback=progress_callback,
             user_message="Searching for recognizable points in each image.",
             done_message="Important points detected in the images.",
+            output_callback=indexed_colmap_progress(
+                progress_callback,
+                "Feature extraction",
+                "Processed file",
+            ),
         )
 
 
@@ -297,9 +424,8 @@ def main(is_loading, progress_callback=None) -> int:
             "--database_path",
             str(tmp_dir / "database.db"),
             "--SequentialMatching.overlap",
-            "30",
+            "50",
             "--SiftMatching.max_num_matches", "32768",
-            "--SiftMatching.max_distance", "1",
             "--SiftMatching.guided_matching", "1",
             "--SiftMatching.num_threads", str(os.cpu_count() or 1),
             
@@ -312,13 +438,12 @@ def main(is_loading, progress_callback=None) -> int:
             "--database_path",
             str(tmp_dir / "database.db"),
             "--SiftMatching.max_num_matches", "32768",
-            "--SiftMatching.max_distance", "1",
             "--SiftMatching.guided_matching", "1",
             "--SiftMatching.num_threads", str(os.cpu_count() or 1),
         ]
 
 
-        if args.use_gpu : 
+        if args.use_gpu :
             matcher_args.extend(["--SiftMatching.use_gpu", "1"])
         else:
             matcher_args.extend(["--SiftMatching.use_gpu", "0"])
@@ -330,6 +455,11 @@ def main(is_loading, progress_callback=None) -> int:
             progress_callback=progress_callback,
             user_message="Comparing images to find camera movement.",
             done_message="Images linked together.",
+            output_callback=indexed_colmap_progress(
+                progress_callback,
+                "Matching",
+                "Matching image",
+            ),
         )
 
         #Colmap Mapping 
@@ -340,7 +470,6 @@ def main(is_loading, progress_callback=None) -> int:
         mapper_args = [
             colmap,
             "mapper",
-            "GLOBAL",
             "--database_path",
             str(tmp_dir / "database.db"),
             "--image_path",
@@ -351,9 +480,14 @@ def main(is_loading, progress_callback=None) -> int:
             str(os.cpu_count() or 1),
             "--Mapper.max_model_overlap",
             "30",
-            "--Mapper.ba_refine_principal_point", "1",
             "--Mapper.ba_global_max_refinements","20",
-            "--Mapper.tri_min_angle","0.01", 
+            "--Mapper.init_min_num_inliers", "50",
+            "--Mapper.min_num_matches", "10",
+            "--Mapper.tri_min_angle", "0.5",
+            "--Mapper.ba_global_max_num_iterations", "15",
+            "--Mapper.ba_local_max_num_iterations","10",
+            "--Mapper.filter_max_reproj_error", "2",
+            "--Mapper.max_reg_trials", "10",
         ]
         run_step(
             "mapper",
@@ -361,6 +495,7 @@ def main(is_loading, progress_callback=None) -> int:
             progress_callback=progress_callback,
             user_message="Construction of an initial 3D structure from the images.",
             done_message="Basic 3D structure constructed.",
+            output_callback=mapping_progress(progress_callback, nb_saved),
         )
 
         # Brush training (gaussian) and export

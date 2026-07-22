@@ -25,7 +25,7 @@ class Menu(QMainWindow):
         self.setCentralWidget(self.central_widget)
         self.main_layout = QVBoxLayout(self.central_widget)
 
-#Construction de la barre du haut
+#Building the top bar with the settings button, the load reconstruction button and the close button
 
         self.top_bar_layout = QHBoxLayout()
         self.top_bar_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
