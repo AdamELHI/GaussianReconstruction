@@ -69,10 +69,11 @@ class AppController:
         self.view.set_status(f"Video selected: {file_path}")
 
     def select_output_file(self):
+        suggested_output = self.view.get_output_path() or str(DEFAULT_OUTPUT_DIR)
         file_path, _ = QFileDialog.getSaveFileName(
             self.view,
             "Select .ply file ",
-            str(DEFAULT_OUTPUT_DIR),
+            suggested_output,
             "PLY Files (*.ply)",
         )
         if not file_path:

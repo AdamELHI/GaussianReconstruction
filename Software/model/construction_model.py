@@ -9,14 +9,23 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+def default_output_directory() -> Path:
+    override = os.environ.get("GAUSSIAN_RECONSTRUCTION_OUTPUT_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "Output"
+
+    return ROOT / "Output"
 
 
-
-DEFAULT_OUTPUT_DIR = Path("/home/ubuntu/Stage/output")
+DEFAULT_OUTPUT_DIR = default_output_directory()
 
 
 class ConstructionModel:
     def __init__(self):
+        DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         self.last_result: dict[str, Any] | None = None
 
     def resolve_output_path(self, input_path: str, output_path: str | None) -> Path:

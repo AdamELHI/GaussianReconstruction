@@ -284,30 +284,31 @@ def align_ply(ply_path: Path, progress_callback=None) -> None:
 def get_frames_sharpness(
     video_capture, start_frame, end_frame, progress_callback=None
 ):
-    list_sharpness,list_frame = [],[]
+    list_sharpness = []
 
     current_pos = video_capture.get(cv.CAP_PROP_POS_FRAMES)
-
     video_capture.set(cv.CAP_PROP_POS_FRAMES, start_frame)
 
-    for i in range(start_frame, end_frame):
-        message = (
-            f"Listing sharpness: frame {i}/{int(video_capture.get(cv.CAP_PROP_FRAME_COUNT))}"
-        )
-        print(message)
-        emit_progress(progress_callback, message)
+    frame_count = max(0, end_frame - start_frame)
+    progress_interval = max(1, frame_count // 100)
+
+    for frame_number in range(start_frame, end_frame):
         success, frame = video_capture.read()
-        if success :
-            gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
-            sharpness = cv.Laplacian(gray, cv.CV_64F).var()
+        if not success:
+            break
 
-            list_sharpness.append(sharpness)
-            list_frame.append(frame)
+        gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
+        list_sharpness.append(cv.Laplacian(gray, cv.CV_64F).var())
 
+        processed_count = frame_number - start_frame + 1
+        if processed_count % progress_interval == 0 or processed_count == frame_count:
+            message = f"Analysing sharpness: {processed_count}/{frame_count} frames"
+            print(message)
+            emit_progress(progress_callback, message)
 
     video_capture.set(cv.CAP_PROP_POS_FRAMES, current_pos)
 
-    return np.asarray(list_frame), np.asarray(list_sharpness)
+    return np.asarray(list_sharpness, dtype=np.float64)
 
 def main(is_loading, progress_callback=None) -> int:
     p = argparse.ArgumentParser(description="Run Opencv + COLMAP + Brush to reconstruct a 3D splat from a video")
@@ -321,6 +322,8 @@ def main(is_loading, progress_callback=None) -> int:
     p.add_argument("--keep-temp", action="store_true", help="Keep the temporary COLMAP/Brush working directory")
     p.add_argument("--skip-align", action="store_true", help="Skip PCA alignment with splat-transform")
     args = p.parse_args()
+    if not np.isfinite(args.frame_rate) or args.frame_rate <= 0:
+        raise ValueError("Frame rate must be greater than zero.")
 
     input_path = Path(args.input_file).expanduser()
     output_path = Path(args.output_file).expanduser()
@@ -395,11 +398,17 @@ def main(is_loading, progress_callback=None) -> int:
         
 
         video_capture = cv.VideoCapture(str(input_path))
+        if not video_capture.isOpened():
+            raise RuntimeError(f"Could not open video: {input_path}")
 
         nb_frame = 0
         nb_saved = 0
 
         fps = video_capture.get(cv.CAP_PROP_FPS)
+        if not np.isfinite(fps) or fps <= 0:
+            video_capture.release()
+            raise RuntimeError("Could not determine a valid video frame rate.")
+
         end_frame = int(video_capture.get(cv.CAP_PROP_FRAME_COUNT))
 
         snapshot_every = 1
@@ -413,38 +422,63 @@ def main(is_loading, progress_callback=None) -> int:
 
         if args.end_time:
             h, m, sec = map(int, args.end_time.split(":"))
-            end_frame = int((h * 3600 + m * 60 + sec) * fps)
-        l_frame, l_sharpness = get_frames_sharpness(
+            end_frame = min(
+                end_frame,
+                int((h * 3600 + m * 60 + sec) * fps),
+            )
+
+        l_sharpness = get_frames_sharpness(
             video_capture,
             nb_frame,
             end_frame,
             progress_callback=progress_callback,
         )
-        score_mean = l_sharpness.mean()
+        if l_sharpness.size == 0:
+            video_capture.release()
+            raise RuntimeError("No readable frames were found in the selected video range.")
+
+        end_frame = nb_frame + int(l_sharpness.size)
+        score_mean = float(l_sharpness.mean())
         print("score_mean =", score_mean)
         video_capture.set(cv.CAP_PROP_POS_FRAMES, nb_frame)
 
 
+        sharpness_index = 0
         while nb_frame < end_frame :
+            success, image = video_capture.read()
+            if not success:
+                break
+
             if nb_frame >= next_snapshot:
-                sharpness, image = l_sharpness[nb_frame], l_frame[nb_frame]
+                sharpness = float(l_sharpness[sharpness_index])
                 print(f"Frame {nb_frame}: sharpness={sharpness}")
 
                 image_path = images_dir / f"frame_{nb_saved:05d}.jpg"
-                cv.imwrite(str(image_path), image)
+                if not cv.imwrite(str(image_path), image):
+                    video_capture.release()
+                    raise RuntimeError(f"Could not write extracted frame: {image_path}")
                 nb_saved += 1
 
+                if np.isfinite(score_mean) and score_mean > 0:
+                    interval = int(
+                        (fps / args.frame_rate) * (sharpness / score_mean)
+                    )
+                else:
+                    interval = int(fps / args.frame_rate)
+
                 interval = min(
-                        int((fps / args.frame_rate) * (sharpness / score_mean)),
-                        int(1.5 * fps / args.frame_rate)
-                    ) 
+                    interval,
+                    int(1.5 * fps / args.frame_rate),
+                )
 
                 snapshot_every = max(1, interval)
                 print("interval =", interval)
                 next_snapshot = nb_frame + snapshot_every
 
             nb_frame += 1
-                
+            sharpness_index += 1
+
+        video_capture.release()
         print(f"{nb_saved} images extracted")
 
 
