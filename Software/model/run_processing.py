@@ -15,6 +15,22 @@ from plyfile import PlyData
 from scipy.spatial.transform import Rotation
 
 
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+WORKSPACE_DIR = PROJECT_DIR.parent
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    BUNDLED_TOOLS_DIR = Path(sys._MEIPASS) / "tools"
+else:
+    BUNDLED_TOOLS_DIR = None
+
+
+def find_tool(root: Path, candidates: tuple[Path, ...]) -> str | None:
+    for relative_path in candidates:
+        executable = root / relative_path
+        if executable.is_file() and os.access(executable, os.X_OK):
+            return str(executable)
+    return None
+
+
 def emit_progress(progress_callback, message: str) -> None:
     if progress_callback:
         progress_callback(message)
@@ -37,6 +53,29 @@ def run_step(
 
     env.pop("QT_PLUGIN_PATH", None)
     env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+
+    search_paths = []
+    library_paths = []
+    if BUNDLED_TOOLS_DIR is not None:
+        search_paths.extend(
+            [
+                BUNDLED_TOOLS_DIR / "colmap" / "bin",
+                BUNDLED_TOOLS_DIR / "brush",
+            ]
+        )
+        library_paths.append(BUNDLED_TOOLS_DIR / "colmap" / "lib")
+
+    existing_search_paths = [str(path) for path in search_paths if path.is_dir()]
+    if existing_search_paths:
+        env["PATH"] = os.pathsep.join(
+            existing_search_paths + [env.get("PATH", "")]
+        )
+
+    existing_library_paths = [str(path) for path in library_paths if path.is_dir()]
+    if existing_library_paths:
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(
+            existing_library_paths + [env.get("LD_LIBRARY_PATH", "")]
+        )
 
     if output_callback is None:
         subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True, env=env)
@@ -110,20 +149,56 @@ def resolve_executable(names: list[str], env_var: str | None = None) -> str:
 
 
 def resolve_colmap() -> str:
+    override = os.environ.get("COLMAP_BIN")
+    if override:
+        return override
+
+    if BUNDLED_TOOLS_DIR is not None:
+        bundled = find_tool(
+            BUNDLED_TOOLS_DIR / "colmap",
+            (Path("bin/colmap"), Path("colmap")),
+        )
+        if bundled:
+            return bundled
+
+    external = find_tool(
+        WORKSPACE_DIR / "Colmap",
+        (Path("bin/colmap"), Path("colmap")),
+    )
+    if external:
+        return external
+
     return resolve_executable(["colmap"])
 
 
 def resolve_brush(progress_callback=None) -> str:
-    candidates = [
-        os.environ.get("BRUSH_BIN"),
-        str(Path(__file__).resolve().parent / "brush" / "target" / "debug" / "brush"),
-        str(Path("/home/ubuntu/Stage/Test_env/brush/target/debug/brush")),
-        shutil.which("brush"),
-        shutil.which("brush_app"),
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).expanduser().is_file():
-            return str(Path(candidate).expanduser())
+    override = os.environ.get("BRUSH_BIN")
+    if override and Path(override).expanduser().is_file():
+        return str(Path(override).expanduser())
+
+    if BUNDLED_TOOLS_DIR is not None:
+        bundled = find_tool(
+            BUNDLED_TOOLS_DIR / "brush",
+            (Path("brush"), Path("brush-app")),
+        )
+        if bundled:
+            return bundled
+
+    external = find_tool(
+        WORKSPACE_DIR / "brush",
+        (
+            Path("target/release/brush"),
+            Path("target/release/brush-app"),
+            Path("target/debug/brush"),
+            Path("target/debug/brush-app"),
+        ),
+    )
+    if external:
+        return external
+
+    discovered = shutil.which("brush") or shutil.which("brush-app")
+    if discovered:
+        return discovered
     raise FileNotFoundError("Brush executable not found")
 
 
