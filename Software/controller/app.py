@@ -10,12 +10,20 @@ class ReconstructionWorker(QObject):
     finished = Signal(dict)
     failed = Signal(str)
 
-    def __init__(self, model, input_path, output_path, parameters):
+    def __init__(
+        self,
+        model,
+        input_path,
+        output_path,
+        parameters,
+        pause_controller,
+    ):
         super().__init__()
         self.model = model
         self.input_path = input_path
         self.output_path = output_path
         self.parameters = parameters
+        self.pause_controller = pause_controller
 
     @Slot()
     def run(self):
@@ -24,6 +32,7 @@ class ReconstructionWorker(QObject):
                 self.input_path,
                 self.output_path,
                 progress_callback=self.progress.emit,
+                pause_controller=self.pause_controller,
                 **self.parameters,
             )
         except Exception as exc:
@@ -41,6 +50,7 @@ class AppController:
         self.reconstruction_parameters = Settings.DEFAULT_PARAMETERS.copy()
         self.reconstruction_thread = None
         self.reconstruction_worker = None
+        self.pause_controller = None
         self.connect_signals()
 
     def connect_signals(self):
@@ -49,6 +59,7 @@ class AppController:
         self.view.select_video_button.clicked.connect(self.select_input_file)
         self.view.select_output_button.clicked.connect(self.select_output_file)
         self.view.run_button.clicked.connect(self.run_reconstruction)
+        self.view.pause_button.clicked.connect(self.toggle_reconstruction_pause)
         self.view.load_button.clicked.connect(self.load_reconstruction)
         self.view.close_button.clicked.connect(self.view.close)
 
@@ -110,11 +121,13 @@ class AppController:
         )
 
         self.reconstruction_thread = QThread()
+        self.pause_controller = model.run_processing.PauseManager()
         self.reconstruction_worker = ReconstructionWorker(
             self.model,
             input_path,
             output_path,
             self.reconstruction_parameters.copy(),
+            self.pause_controller,
         )
         self.reconstruction_worker.moveToThread(self.reconstruction_thread)
 
@@ -138,7 +151,26 @@ class AppController:
         self.reconstruction_thread.finished.connect(self.clear_reconstruction_worker)
         self.reconstruction_thread.start()
 
+    def toggle_reconstruction_pause(self):
+        if not self.reconstruction_thread or not self.reconstruction_thread.isRunning():
+            return
+        if self.pause_controller is None:
+            return
+
+        if self.pause_controller.is_paused:
+            self.pause_controller.resume()
+            self.view.set_reconstruction_paused(False)
+            self.view.set_status("Reconstruction in progress...")
+            self.view.add_progress_message("Reconstruction resumed.")
+        else:
+            self.pause_controller.pause()
+            self.view.set_reconstruction_paused(True)
+            self.view.set_status("Reconstruction paused.")
+            self.view.add_progress_message("Reconstruction paused.")
+
     def handle_reconstruction_finished(self, result):
+        if self.pause_controller:
+            self.pause_controller.resume()
         self.view.set_reconstruction_running(False)
         self.view.set_status(result["message"])
 
@@ -165,6 +197,8 @@ class AppController:
             )
 
     def handle_reconstruction_failed(self, message):
+        if self.pause_controller:
+            self.pause_controller.resume()
         self.view.set_reconstruction_running(False)
         self.view.set_status("Error of reconstruction.")
         self.view.add_progress_message(
@@ -175,6 +209,7 @@ class AppController:
     def clear_reconstruction_worker(self):
         self.reconstruction_thread = None
         self.reconstruction_worker = None
+        self.pause_controller = None
 
     def load_reconstruction(self):
         file_path, _ = QFileDialog.getOpenFileName(
