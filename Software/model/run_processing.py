@@ -7,6 +7,7 @@ import os
 import re
 import signal
 import shutil
+import sqlite3
 import cv2 as cv
 import subprocess
 import sys
@@ -106,28 +107,28 @@ def colmap_resource_limits() -> tuple[int, int]:
 def sequential_matching_overlap(
     nb_frames: int,
     video_duration_seconds: float,
-    max_num_matches: int,
     matching_window_seconds: float = 5.0,
+    overlap_cap: int = 50,
 ) -> int:
     if nb_frames <= 1:
         return 1
 
-    overlap_cap = 50
-    if max_num_matches <= 8192:
-        overlap_cap = 5
-    elif max_num_matches <= 16384:
-        overlap_cap = 10
+    frame_based_overlap = max(5, math.ceil(nb_frames / 10))
 
     if not np.isfinite(video_duration_seconds) or video_duration_seconds <= 0:
-        temporal_overlap = 5
+        temporal_overlap = frame_based_overlap
     else:
         extracted_fps = nb_frames / video_duration_seconds
-        temporal_overlap = max(
-            2,
-            math.ceil(extracted_fps * matching_window_seconds),
-        )
+        temporal_overlap = math.ceil(extracted_fps * matching_window_seconds)
 
-    return min(nb_frames - 1, overlap_cap, temporal_overlap)
+    return min(
+        nb_frames - 1,
+        overlap_cap,
+        max(frame_based_overlap, temporal_overlap),
+    )
+
+
+
 
 
 class PauseManager:
@@ -228,6 +229,38 @@ def finalize_brush_output(
     return output_path
 
 
+def external_tool_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    env.pop("QT_PLUGIN_PATH", None)
+    env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+
+    search_paths = []
+    library_paths = []
+    if BUNDLED_TOOLS_DIR is not None:
+        search_paths.extend(
+            [
+                BUNDLED_TOOLS_DIR / "colmap" / "bin",
+                BUNDLED_TOOLS_DIR / "brush",
+                BUNDLED_TOOLS_DIR / "ffmpeg",
+            ]
+        )
+        library_paths.append(BUNDLED_TOOLS_DIR / "colmap" / "lib")
+
+    existing_search_paths = [str(path) for path in search_paths if path.is_dir()]
+    if existing_search_paths:
+        env["PATH"] = os.pathsep.join(
+            existing_search_paths + [env.get("PATH", "")]
+        )
+
+    existing_library_paths = [str(path) for path in library_paths if path.is_dir()]
+    if existing_library_paths:
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(
+            existing_library_paths + [env.get("LD_LIBRARY_PATH", "")]
+        )
+
+    return env
+
+
 def run_step(
     label: str,
     cmd: list[str],
@@ -244,33 +277,7 @@ def run_step(
         emit_progress(progress_callback, user_message)
     print(f"\n==> {label}", flush=True)
     print("$ " + " ".join(cmd), flush=True)
-    env = os.environ.copy()
-
-    env.pop("QT_PLUGIN_PATH", None)
-    env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
-
-    search_paths = []
-    library_paths = []
-    if BUNDLED_TOOLS_DIR is not None:
-        search_paths.extend(
-            [
-                BUNDLED_TOOLS_DIR / "colmap" / "bin",
-                BUNDLED_TOOLS_DIR / "brush",
-            ]
-        )
-        library_paths.append(BUNDLED_TOOLS_DIR / "colmap" / "lib")
-
-    existing_search_paths = [str(path) for path in search_paths if path.is_dir()]
-    if existing_search_paths:
-        env["PATH"] = os.pathsep.join(
-            existing_search_paths + [env.get("PATH", "")]
-        )
-
-    existing_library_paths = [str(path) for path in library_paths if path.is_dir()]
-    if existing_library_paths:
-        env["LD_LIBRARY_PATH"] = os.pathsep.join(
-            existing_library_paths + [env.get("LD_LIBRARY_PATH", "")]
-        )
+    env = external_tool_environment()
 
     try:
         process = subprocess.Popen(
@@ -392,6 +399,137 @@ def resolve_executable(names: list[str], env_var: str | None = None) -> str:
     raise FileNotFoundError(f"Could not find any of {names}")
 
 
+def resolve_ffmpeg_tool(name: str) -> str:
+    env_var = f"{name.upper()}_BIN"
+    override = os.environ.get(env_var)
+    if override:
+        executable = Path(override).expanduser()
+        if executable.is_file() and os.access(executable, os.X_OK):
+            return str(executable)
+        raise FileNotFoundError(
+            f"{env_var} does not point to an executable file: {executable}"
+        )
+
+    if BUNDLED_TOOLS_DIR is not None:
+        bundled = find_tool(
+            BUNDLED_TOOLS_DIR / "ffmpeg",
+            (Path(name), Path(f"{name}.exe")),
+        )
+        if bundled:
+            return bundled
+
+    return resolve_executable([name, f"{name}.exe"])
+
+
+def probe_video_field_order(input_path: Path) -> str:
+    ffprobe = resolve_ffmpeg_tool("ffprobe")
+    try:
+        result = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=field_order",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(input_path),
+            ],
+            env=external_tool_environment(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ExternalToolError(
+            f"Could not inspect the video field order with FFprobe: {exc}"
+        ) from exc
+
+    if result.returncode != 0:
+        raise ExternalToolError(
+            external_tool_error_message(
+                "ffprobe",
+                result.returncode,
+                result.stdout.splitlines(),
+            )
+        )
+
+    for line in result.stdout.splitlines():
+        field_order = line.strip().lower()
+        if field_order:
+            return field_order
+    return "unknown"
+
+
+def normalize_video_if_interlaced(
+    input_path: Path,
+    tmp_dir: Path,
+    progress_callback=None,
+    pause_controller=None,
+) -> Path:
+    field_order = probe_video_field_order(input_path)
+    field_order_message = f"Video field order detected: {field_order}."
+    print(field_order_message)
+    emit_progress(progress_callback, field_order_message)
+
+    interlaced_orders = {"tt", "bb", "tb", "bt"}
+
+    if field_order not in interlaced_orders :
+        return input_path
+    
+    normalized_path = tmp_dir / "progressive_input.mp4"
+    run_step(
+        "ffmpeg video normalization",
+        [
+            resolve_ffmpeg_tool("ffmpeg"),
+            "-y",
+            "-v",
+            "error",
+            "-i",
+            str(input_path),
+            "-map",
+            "0:v:0",
+            "-vf",
+            "bwdif=mode=send_frame:parity=auto:deint=all,format=yuv420p",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-movflags",
+            "+faststart",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            str(normalized_path),
+        ],
+        progress_callback=progress_callback,
+        user_message=(
+            "The video is not progressive. Creating a temporary progressive "
+            "copy before extracting frames."
+        ),
+        done_message="The temporary progressive video is ready.",
+        output_callback=tool_output_progress(
+            progress_callback,
+            "Video normalization",
+        ),
+        pause_controller=pause_controller,
+    )
+
+    if not normalized_path.is_file() or normalized_path.stat().st_size == 0:
+        raise ExternalToolError(
+            "FFmpeg did not create the temporary progressive video."
+        )
+    return normalized_path
+
+
 def resolve_colmap() -> str:
     override = os.environ.get("COLMAP_BIN")
     if override:
@@ -413,6 +551,154 @@ def resolve_colmap() -> str:
         return external
 
     return resolve_executable(["colmap"])
+
+
+def colmap_supports_cuda(colmap_executable: str) -> bool:
+    try:
+        result = subprocess.run(
+            [colmap_executable, "-h"],
+            env=external_tool_environment(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+    version_lines = "\n".join(result.stdout.splitlines()[:5]).lower()
+    if "without cuda" in version_lines:
+        return False
+    return "with cuda" in version_lines
+
+
+def cuda_gpu_available() -> bool:
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        return False
+
+    try:
+        result = subprocess.run(
+            [nvidia_smi, "-L"],
+            env=external_tool_environment(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+    return result.returncode == 0 and any(
+        line.strip().startswith("GPU ")
+        for line in result.stdout.splitlines()
+    )
+
+
+def available_gpu_memory_bytes() -> int:
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        return 0
+
+    try:
+        result = subprocess.run(
+            [
+                nvidia_smi,
+                "--query-gpu=memory.free",
+                "--format=csv,noheader,nounits",
+            ],
+            env=external_tool_environment(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0
+
+    if result.returncode != 0:
+        return 0
+
+    free_memory_mib = []
+    for line in result.stdout.splitlines():
+        try:
+            free_memory_mib.append(int(line.strip()))
+        except ValueError:
+            continue
+
+    if not free_memory_mib:
+        return 0
+
+    # COLMAP uses every selected GPU, so use the smallest available capacity.
+    return min(free_memory_mib) * 1024**2
+
+
+def colmap_gpu_match_limit(max_num_matches: int) -> tuple[int, int]:
+    available_vram = available_gpu_memory_bytes()
+    if available_vram >= 16 * 1024**3:
+        gpu_limit = 32768
+    elif available_vram >= 5 * 1024**3:
+        gpu_limit = 16384
+    else:
+        gpu_limit = 8192
+    return min(max_num_matches, gpu_limit), available_vram
+
+
+def configure_colmap_gpu(
+    colmap_executable: str,
+    gpu_requested: bool,
+    progress_callback=None,
+) -> bool:
+    if not gpu_requested:
+        message = "COLMAP GPU acceleration is disabled; using the CPU."
+        print(message)
+        emit_progress(progress_callback, message)
+        return False
+
+    if not colmap_supports_cuda(colmap_executable):
+        message = (
+            "The bundled COLMAP does not report CUDA support; "
+            "feature extraction and matching will use the CPU."
+        )
+        print(message)
+        emit_progress(progress_callback, message)
+        return False
+
+    if not cuda_gpu_available():
+        message = (
+            "COLMAP supports CUDA, but no compatible NVIDIA GPU was detected; "
+            "feature extraction and matching will use the CPU."
+        )
+        print(message)
+        emit_progress(progress_callback, message)
+        return False
+
+    message = (
+        "COLMAP CUDA support detected; feature extraction and matching "
+        "will use the GPU."
+    )
+    print(message)
+    emit_progress(progress_callback, message)
+    return True
+
+
+def colmap_database_match_count(database_path: Path) -> int:
+    try:
+        with sqlite3.connect(database_path) as database:
+            row = database.execute(
+                "SELECT COUNT(*) FROM two_view_geometries WHERE rows > 0"
+            ).fetchone()
+    except sqlite3.Error as exc:
+        raise ExternalToolError(
+            f"COLMAP matching results could not be verified: {exc}"
+        ) from exc
+    return int(row[0]) if row else 0
 
 
 def resolve_brush(progress_callback=None) -> str:
@@ -645,7 +931,12 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             output_callback=tool_output_progress(progress_callback, "Brush"),
             pause_controller=pause_controller,
         )
-    else :     
+    else :
+        use_colmap_gpu = configure_colmap_gpu(
+            colmap,
+            args.use_gpu,
+            progress_callback,
+        )
         print("The next steps in the implementation process are :")
         print("  1. Extracting frames from video (ffmpeg)")
         print("  2. COLMAP feature extraction")
@@ -656,9 +947,16 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
     
         
 
-        video_capture = cv.VideoCapture(str(input_path))
+        processing_input_path = normalize_video_if_interlaced(
+            input_path,
+            tmp_dir,
+            progress_callback=progress_callback,
+            pause_controller=pause_controller,
+        )
+
+        video_capture = cv.VideoCapture(str(processing_input_path))
         if not video_capture.isOpened():
-            raise RuntimeError(f"Could not open video: {input_path}")
+            raise RuntimeError(f"Could not open video: {processing_input_path}")
 
         nb_frame = 0
         nb_saved = 0
@@ -771,13 +1069,13 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             "--SiftExtraction.peak_threshold", "0.003",
             "--SiftExtraction.max_num_features",
             str(max_num_features),
-            "--SiftExtraction.num_threads",
+            "--FeatureExtraction.num_threads",
             str(num_threads)
         ]
-        if args.use_gpu :
-            feature_args.extend(["--SiftExtraction.use_gpu", "1"])
+        if use_colmap_gpu:
+            feature_args.extend(["--FeatureExtraction.use_gpu", "1"])
         else:
-            feature_args.extend(["--SiftExtraction.use_gpu", "0"])
+            feature_args.extend(["--FeatureExtraction.use_gpu", "0"])
 
         run_step(
             "feature_extractor",
@@ -798,10 +1096,18 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
 
         max_num_matches, num_threads = colmap_resource_limits()
         max_num_matches = min(max_num_features, max_num_matches)
+        if use_colmap_gpu:
+            max_num_matches, available_vram = colmap_gpu_match_limit(
+                max_num_matches
+            )
+            print(
+                "COLMAP GPU matching limit: "
+                f"{max_num_matches} matches with "
+                f"{available_vram / 1024**3:.1f} GiB of available VRAM"
+            )
         matching_overlap = sequential_matching_overlap(
             nb_saved,
             video_duration_seconds,
-            max_num_matches,
         )
         print(
             "COLMAP matching limits: "
@@ -817,9 +1123,9 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             str(tmp_dir / "database.db"),
             "--SequentialMatching.overlap",
             str(matching_overlap),
-            "--SiftMatching.max_num_matches", str(max_num_matches),
-            "--SiftMatching.guided_matching", "1",
-            "--SiftMatching.num_threads", str(num_threads),
+            "--FeatureMatching.max_num_matches", str(max_num_matches),
+            "--FeatureMatching.guided_matching", "1",
+            "--FeatureMatching.num_threads", str(num_threads),
             
         ]
 
@@ -829,24 +1135,23 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             "exhaustive_matcher",
             "--database_path",
             str(tmp_dir / "database.db"),
-            "--SiftMatching.max_num_matches", str(max_num_matches),
-            "--SiftMatching.guided_matching", "1",
-            "--SiftMatching.num_threads", str(num_threads),
+            "--FeatureMatching.max_num_matches", str(max_num_matches),
+            "--FeatureMatching.guided_matching", "1",
+            "--FeatureMatching.num_threads", str(num_threads),
         ]
 
 
-        if args.use_gpu :
-            matcher_args.extend(["--SiftMatching.use_gpu", "1"])
+        if use_colmap_gpu:
+            matcher_args.extend(["--FeatureMatching.use_gpu", "1"])
         else:
-            matcher_args.extend(["--SiftMatching.use_gpu", "0"])
+            matcher_args.extend(["--FeatureMatching.use_gpu", "0"])
         
         
-        run_step(
+        matcher_output = run_step(
             "sequential_matcher",
             matcher_args,
             progress_callback=progress_callback,
             user_message="Comparing images to find camera movement.",
-            done_message="Images linked together.",
             output_callback=indexed_colmap_progress(
                 progress_callback,
                 "Matching",
@@ -854,6 +1159,21 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             ),
             pause_controller=pause_controller,
         )
+
+        match_count = colmap_database_match_count(tmp_dir / "database.db")
+        if match_count == 0:
+            matching_error = (
+                "COLMAP matching failed: no image pairs with valid matches "
+                "were written to the database."
+            )
+            output_tail = "\n".join(matcher_output).strip()
+            if output_tail:
+                matching_error += (
+                    "\nLast messages from sequential_matcher:\n"
+                    f"{output_tail[-6000:]}"
+                )
+            raise ExternalToolError(matching_error)
+        emit_progress(progress_callback, "Images linked together.")
 
         #Colmap Mapping 
 

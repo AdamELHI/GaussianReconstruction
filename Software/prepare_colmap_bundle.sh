@@ -5,6 +5,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 workspace_dir="$(dirname -- "$(dirname -- "$script_dir")")"
 bundle_dir="${1:-$workspace_dir/Colmap}"
 colmap_executable="${COLMAP_BIN:-$(command -v colmap || true)}"
+extra_library_path="${COLMAP_EXTRA_LIBRARY_PATH:-}"
 
 if [[ -z "$colmap_executable" || ! -x "$colmap_executable" ]]; then
     echo "COLMAP was not found. Install it or set COLMAP_BIN." >&2
@@ -14,6 +15,21 @@ fi
 colmap_executable="$(readlink -f -- "$colmap_executable")"
 mkdir -p -- "$bundle_dir/bin" "$bundle_dir/lib"
 install -m 0755 -- "$colmap_executable" "$bundle_dir/bin/colmap"
+
+runtime_library_path="$extra_library_path"
+if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
+    runtime_library_path="${runtime_library_path:+$runtime_library_path:}$LD_LIBRARY_PATH"
+fi
+
+ldd_output="$(
+    LD_LIBRARY_PATH="$runtime_library_path" ldd "$colmap_executable"
+)"
+
+if grep -qi "libmkl" <<<"$ldd_output"; then
+    echo "COLMAP is linked to Intel MKL, which is not safe to bundle partially." >&2
+    echo "Recompile COLMAP with OpenBLAS before creating the bundle." >&2
+    exit 1
+fi
 
 is_host_runtime_library() {
     case "$1" in
@@ -34,14 +50,14 @@ while IFS= read -r dependency; do
     fi
     install -m 0644 -- "$dependency" "$bundle_dir/lib/$dependency_name"
 done < <(
-    ldd "$colmap_executable" |
+    printf '%s\n' "$ldd_output" |
         awk '/=> \// { print $3 } /^\// { print $1 }' |
         sort -u
 )
 
-if ldd "$colmap_executable" | grep -q "not found"; then
+if grep -q "not found" <<<"$ldd_output"; then
     echo "COLMAP has unresolved shared-library dependencies:" >&2
-    ldd "$colmap_executable" | grep "not found" >&2
+    grep "not found" <<<"$ldd_output" >&2
     exit 1
 fi
 

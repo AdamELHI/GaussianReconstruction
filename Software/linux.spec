@@ -1,4 +1,5 @@
 import os
+import shutil
 from pathlib import Path
 
 
@@ -10,6 +11,12 @@ colmap_dir = Path(
 ).expanduser().resolve()
 brush_root = Path(
     os.environ.get("BRUSH_BUNDLE_DIR", workspace_dir / "brush")
+).expanduser().resolve()
+ffmpeg_executable = Path(
+    os.environ.get("FFMPEG_BIN") or shutil.which("ffmpeg") or ""
+).expanduser().resolve()
+ffprobe_executable = Path(
+    os.environ.get("FFPROBE_BIN") or shutil.which("ffprobe") or ""
 ).expanduser().resolve()
 
 if not (colmap_dir / "bin" / "colmap").is_file():
@@ -35,15 +42,28 @@ if brush_executable is None:
         f"No Linux Brush executable was found below: {brush_root}"
     )
 
+if not ffmpeg_executable.is_file():
+    raise FileNotFoundError(
+        "FFmpeg executable not found. Install it or set FFMPEG_BIN."
+    )
+if not ffprobe_executable.is_file():
+    raise FileNotFoundError(
+        "FFprobe executable not found. Install it or set FFPROBE_BIN."
+    )
+
 datas = [
     (str(colmap_dir), "tools/colmap"),
     (str(brush_executable), "tools/brush"),
+]
+binaries = [
+    (str(ffmpeg_executable), "tools/ffmpeg"),
+    (str(ffprobe_executable), "tools/ffmpeg"),
 ]
 
 a = Analysis(
     [str(software_dir / "main.py")],
     pathex=[str(software_dir)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=[],
     hookspath=[],

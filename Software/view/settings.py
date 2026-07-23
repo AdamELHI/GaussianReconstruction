@@ -66,7 +66,9 @@ class Settings(QDialog):
         options_group = QGroupBox("Options")
         options_layout = QVBoxLayout(options_group)
 
-        self.use_gpu_checkbox = QCheckBox("Use the GPU if available")
+        self.use_gpu_checkbox = QCheckBox(
+            "Allow COLMAP to use the GPU when CUDA is available"
+        )
         self.use_gpu_checkbox.setChecked(bool(self.parameters["use_gpu"]))
 
         self.keep_temp_checkbox = QCheckBox("Keep the temporary directory")
