@@ -176,6 +176,27 @@ class Menu(QMainWindow):
                 self.run_button.setText("Reconstruction in progress...")
                 self.progress_bar.setRange(0, 0)
 
+    def set_reconstruction_loading(self, is_loading: bool) -> None:
+        controls_enabled = not is_loading
+        self.run_button.setEnabled(controls_enabled)
+        self.select_video_button.setEnabled(controls_enabled)
+        self.select_output_button.setEnabled(controls_enabled)
+        self.settings_button.setEnabled(controls_enabled)
+        self.load_button.setEnabled(controls_enabled)
+        self.load_reconstruct_button.setEnabled(controls_enabled)
+        self.close_button.setEnabled(controls_enabled)
+        self.pause_button.setEnabled(False)
+
+        if is_loading:
+            self.load_button.setText("Loading the reconstruction...")
+            self.load_reconstruct_button.setText("Loading the reconstruction...")
+            self.progress_bar.setRange(0, 0)
+        else:
+            self.load_button.setText("Load a reconstruction")
+            self.load_reconstruct_button.setText("Load a .ply file")
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(0)
+
     def get_input_path(self) -> str:
         return self.input_path
 

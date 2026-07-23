@@ -1,4 +1,6 @@
+import math
 import os
+import re
 import sys
 
 from pathlib import Path
@@ -48,6 +50,91 @@ class ConstructionModel:
             encoding="utf-8",
         )
 
+    @staticmethod
+    def parse_video_time(value: str | None, field_name: str) -> int | None:
+        if value is None:
+            return None
+
+        match = re.fullmatch(r"(\d+):([0-5]\d):([0-5]\d)", value)
+        if match is None:
+            raise ValueError(
+                f"{field_name} must use the HH:MM:SS format "
+                "(for example 00:01:30)."
+            )
+
+        hours, minutes, seconds = (int(part) for part in match.groups())
+        return hours * 3600 + minutes * 60 + seconds
+
+    @staticmethod
+    def format_video_time(seconds: float) -> str:
+        rounded_seconds = max(0, int(round(seconds)))
+        hours, remainder = divmod(rounded_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    def validate_reconstruction_parameters(
+        self,
+        input_path: str | None,
+        parameters: dict[str, Any],
+    ) -> None:
+        frame_rate = float(parameters["fps"])
+        if not math.isfinite(frame_rate) or frame_rate <= 0:
+            raise ValueError("Frames per second must be greater than zero.")
+
+        if int(parameters["total_train_iters"]) <= 0:
+            raise ValueError("Brush iterations must be greater than zero.")
+
+        start_seconds = self.parse_video_time(
+            parameters.get("start_time"),
+            "Start time",
+        )
+        end_seconds = self.parse_video_time(
+            parameters.get("end_time"),
+            "End time",
+        )
+
+        if end_seconds is not None and end_seconds <= (start_seconds or 0):
+            raise ValueError("End time must be later than start time.")
+
+        if not input_path or (start_seconds is None and end_seconds is None):
+            return
+
+        import cv2 as cv
+
+        video_capture = cv.VideoCapture(str(Path(input_path).expanduser()))
+        try:
+            if not video_capture.isOpened():
+                raise ValueError(
+                    "The selected video could not be opened to check its duration."
+                )
+
+            video_fps = video_capture.get(cv.CAP_PROP_FPS)
+            frame_count = video_capture.get(cv.CAP_PROP_FRAME_COUNT)
+            if (
+                not math.isfinite(video_fps)
+                or video_fps <= 0
+                or not math.isfinite(frame_count)
+                or frame_count <= 0
+            ):
+                raise ValueError(
+                    "The duration of the selected video could not be determined."
+                )
+            duration_seconds = frame_count / video_fps
+        finally:
+            video_capture.release()
+
+        formatted_duration = self.format_video_time(duration_seconds)
+        if start_seconds is not None and start_seconds >= duration_seconds:
+            raise ValueError(
+                f"Start time must be earlier than the video duration "
+                f"({formatted_duration})."
+            )
+        if end_seconds is not None and end_seconds > duration_seconds:
+            raise ValueError(
+                f"End time must not exceed the video duration "
+                f"({formatted_duration})."
+            )
+
     def run_reconstruction(
         self,
         input_path: str,
@@ -65,6 +152,16 @@ class ConstructionModel:
         source = Path(input_path).expanduser()
         if not source.is_file():
             raise FileNotFoundError(f"Video file not found: {source}")
+
+        self.validate_reconstruction_parameters(
+            str(source),
+            {
+                "fps": fps,
+                "start_time": start_time,
+                "end_time": end_time,
+                "total_train_iters": total_train_iters,
+            },
+        )
 
         destination = self.resolve_output_path(str(source), output_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -93,9 +190,10 @@ class ConstructionModel:
                 progress_callback(
                     "A necessary tool is missing. Creating a backup file."
                 )
+                progress_callback(f"Error details: {exc}")
             self.write_placeholder_ply(destination, str(exc))
             result = {
-                "success": True,
+                "success": False,
                 "placeholder": True,
                 "path": str(destination),
                 "message": (
@@ -108,9 +206,10 @@ class ConstructionModel:
                 progress_callback(
                     "An error has interrupted the calculation. A backup file is being created."
                 )
+                progress_callback(f"Error details: {exc}")
             self.write_placeholder_ply(destination, str(exc))
             result = {
-                "success": True,
+                "success": False,
                 "placeholder": True,
                 "path": str(destination),
                 "message": (
@@ -138,7 +237,7 @@ class ConstructionModel:
                     "The reconstruction script did not produce a PLY file.",
                 )
                 result = {
-                    "success": True,
+                    "success": False,
                     "placeholder": True,
                     "path": str(destination),
                     "message": (

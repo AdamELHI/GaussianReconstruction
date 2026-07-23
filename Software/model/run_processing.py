@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import argparse
+import math
 import os
 import re
 import signal
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from collections import deque
 from pathlib import Path
 import numpy as np
 from plyfile import PlyData
@@ -101,18 +103,31 @@ def colmap_resource_limits() -> tuple[int, int]:
     return max_num_features, num_threads
 
 
-def sequential_matching_overlap(nb_frames: int, max_num_matches: int) -> int:
+def sequential_matching_overlap(
+    nb_frames: int,
+    video_duration_seconds: float,
+    max_num_matches: int,
+    matching_window_seconds: float = 5.0,
+) -> int:
     if nb_frames <= 1:
         return 1
 
-    overlap_cap = 20
+    overlap_cap = 50
     if max_num_matches <= 8192:
         overlap_cap = 5
     elif max_num_matches <= 16384:
         overlap_cap = 10
 
-    frame_based_overlap = max(5, (nb_frames + 9) // 10)
-    return min(nb_frames - 1, overlap_cap, frame_based_overlap)
+    if not np.isfinite(video_duration_seconds) or video_duration_seconds <= 0:
+        temporal_overlap = 5
+    else:
+        extracted_fps = nb_frames / video_duration_seconds
+        temporal_overlap = max(
+            2,
+            math.ceil(extracted_fps * matching_window_seconds),
+        )
+
+    return min(nb_frames - 1, overlap_cap, temporal_overlap)
 
 
 class PauseManager:
@@ -167,6 +182,52 @@ def emit_progress(progress_callback, message: str) -> None:
         progress_callback(message)
 
 
+class ExternalToolError(RuntimeError):
+    pass
+
+
+def external_tool_error_message(
+    label: str,
+    return_code: int,
+    output_lines,
+) -> str:
+    return_description = f"exit code {return_code}"
+    if return_code < 0 and os.name == "posix":
+        try:
+            return_description = (
+                f"signal {signal.Signals(-return_code).name} ({return_code})"
+            )
+        except ValueError:
+            pass
+
+    message = f"{label} failed with {return_description}."
+    output_tail = "\n".join(output_lines).strip()
+    if output_tail:
+        message += f"\nLast messages from {label}:\n{output_tail[-6000:]}"
+    else:
+        message += f"\n{label} did not provide an error message."
+    return message
+
+
+def finalize_brush_output(
+    brush_ply_path: Path,
+    output_path: Path,
+    brush_output,
+) -> Path:
+    if not brush_ply_path.is_file():
+        brush_error = (
+            "Brush stopped before the training was completed and did not "
+            "produce a new PLY file. The Brush window may have crashed."
+        )
+        output_tail = "\n".join(brush_output).strip()
+        if output_tail:
+            brush_error += f"\nLast messages from Brush:\n{output_tail[-6000:]}"
+        raise ExternalToolError(brush_error)
+
+    os.replace(brush_ply_path, output_path)
+    return output_path
+
+
 def run_step(
     label: str,
     cmd: list[str],
@@ -176,7 +237,7 @@ def run_step(
     done_message: str | None = None,
     output_callback=None,
     pause_controller=None,
-) -> None:
+) -> list[str]:
     if pause_controller:
         pause_controller.wait_if_paused()
     if user_message:
@@ -211,25 +272,40 @@ def run_step(
             existing_library_paths + [env.get("LD_LIBRARY_PATH", "")]
         )
 
-    process = subprocess.Popen(
-        cmd,
-        cwd=str(cwd) if cwd else None,
-        env=env,
-        stdout=subprocess.PIPE if output_callback else None,
-        stderr=subprocess.STDOUT if output_callback else None,
-        text=True if output_callback else None,
-        errors="replace" if output_callback else None,
-        bufsize=1 if output_callback else -1,
-        start_new_session=os.name == "posix",
-    )
+    try:
+        process = subprocess.Popen(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            bufsize=1,
+            start_new_session=os.name == "posix",
+        )
+    except OSError as exc:
+        emit_progress(
+            progress_callback,
+            f"{label} could not be started: {exc}",
+        )
+        raise
+
     if pause_controller:
         pause_controller.attach_process(process)
 
+    recent_output = deque(maxlen=40)
+    ansi_escape = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
     try:
-        if output_callback is not None:
-            assert process.stdout is not None
-            for line in process.stdout:
-                print(line, end="", flush=True)
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            cleaned_line = ansi_escape.sub("", line)
+            for output_line in cleaned_line.replace("\r", "\n").splitlines():
+                output_line = output_line.strip()
+                if output_line:
+                    recent_output.append(output_line)
+            if output_callback is not None:
                 output_callback(line)
         return_code = process.wait()
     finally:
@@ -237,9 +313,16 @@ def run_step(
             pause_controller.detach_process(process)
 
     if return_code != 0:
-        raise subprocess.CalledProcessError(return_code, cmd)
+        raise ExternalToolError(
+            external_tool_error_message(
+                label,
+                return_code,
+                recent_output,
+            )
+        )
     if done_message:
         emit_progress(progress_callback, done_message)
+    return list(recent_output)
 
 
 def indexed_colmap_progress(progress_callback, stage: str, marker: str):
@@ -275,6 +358,26 @@ def mapping_progress(progress_callback, total_frames: int):
                 progress_callback,
                 f"Mapping: {len(dealt_with)}/{total_frames} frames dealt with.",
             )
+
+    return report
+
+
+def tool_output_progress(progress_callback, stage: str):
+    if progress_callback is None:
+        return None
+
+    ansi_escape = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+    previous_line = None
+
+    def report(line: str) -> None:
+        nonlocal previous_line
+        cleaned_line = ansi_escape.sub("", line)
+        for output_line in cleaned_line.replace("\r", "\n").splitlines():
+            output_line = output_line.strip()
+            if not output_line or output_line == previous_line:
+                continue
+            previous_line = output_line
+            emit_progress(progress_callback, f"{stage}: {output_line}")
 
     return report
 
@@ -539,6 +642,7 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             progress_callback=progress_callback,
             user_message="Opening the 3D file in the viewer.",
             done_message="Visualization is completed.",
+            output_callback=tool_output_progress(progress_callback, "Brush"),
             pause_controller=pause_controller,
         )
     else :     
@@ -637,6 +741,7 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             sharpness_index += 1
 
         video_capture.release()
+        video_duration_seconds = sharpness_index / fps
         print(f"{nb_saved} images extracted")
 
 
@@ -695,6 +800,7 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
         max_num_matches = min(max_num_features, max_num_matches)
         matching_overlap = sequential_matching_overlap(
             nb_saved,
+            video_duration_seconds,
             max_num_matches,
         )
         print(
@@ -791,6 +897,9 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
 
         # Brush training (gaussian) and export
 
+        brush_output_dir = tmp_dir / "brush_output"
+        brush_output_dir.mkdir(parents=True, exist_ok=True)
+        brush_ply_path = brush_output_dir / output_name
         brush_args = [
             brush,
             str(tmp_dir),
@@ -799,12 +908,12 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             "--export-every",
             str(args.total_train_iters),
             "--export-path",
-            str(output_dir),
+            str(brush_output_dir),
             "--export-name",
             output_name,
             "--with-viewer"
         ]
-        run_step(
+        brush_output = run_step(
             "brush",
             brush_args,
             progress_callback=progress_callback,
@@ -813,9 +922,11 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             pause_controller=pause_controller,
         )
 
-        ply_path = output_dir / output_name
-        if not ply_path.is_file():
-            raise FileNotFoundError(f"Brush did not produce the expected output: {ply_path}")
+        ply_path = finalize_brush_output(
+            brush_ply_path,
+            output_path,
+            brush_output,
+        )
 
         try:
             splat_transform = splat_transform_executable()
@@ -909,11 +1020,11 @@ def run(
         pause_controller=pause_controller,
     )
 
-def load(inputfile):
+def load(inputfile, progress_callback=None):
     sys.argv = [
         "run_processing.py",
         inputfile,inputfile
     ]
-    return main(True)
+    return main(True, progress_callback=progress_callback)
 
 
