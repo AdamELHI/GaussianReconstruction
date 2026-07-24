@@ -36,6 +36,11 @@ MANIFEST
 
 # Local Windows packaging environment
 Software/.venv-windows/
+/.build/
+/.rust/
+/.cargo-target/
+/.tmp-brush-v0.3.0/
+/.diagnostics/
 
 # Downloaded tools and generated runtime data
 /Brush/

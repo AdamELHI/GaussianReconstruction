@@ -329,7 +329,14 @@ def external_tool_environment() -> dict[str, str]:
             existing_library_paths + [env.get("LD_LIBRARY_PATH", "")]
         )
 
+    if os.name == "nt":
+        env["WGPU_BACKEND"] = env.get("BRUSH_WGPU_BACKEND", "vulkan")
+
     return env
+
+
+def external_tool_creationflags() -> int:
+    return subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
 def run_step(
@@ -349,7 +356,7 @@ def run_step(
     print(f"\n==> {label}", flush=True)
     print("$ " + " ".join(cmd), flush=True)
     env = external_tool_environment()
-    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    creationflags = external_tool_creationflags()
 
     try:
         process = subprocess.Popen(
@@ -516,6 +523,7 @@ def probe_video_field_order(input_path: Path) -> str:
             errors="replace",
             timeout=30,
             check=False,
+            creationflags=external_tool_creationflags(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ExternalToolError(
@@ -549,7 +557,7 @@ def normalize_video_if_interlaced(
     print(field_order_message)
     emit_progress(progress_callback, field_order_message)
 
-    if field_order == "progressive":
+    if field_order not in ("tt", "bb", "tb", "bt"):
         return input_path
 
     normalized_path = tmp_dir / "progressive_input.mp4"
@@ -623,6 +631,7 @@ def colmap_supports_cuda(colmap_executable: str) -> bool:
             errors="replace",
             timeout=10,
             check=False,
+            creationflags=external_tool_creationflags(),
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -648,6 +657,7 @@ def cuda_gpu_available() -> bool:
             errors="replace",
             timeout=10,
             check=False,
+            creationflags=external_tool_creationflags(),
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -677,6 +687,7 @@ def available_gpu_memory_bytes() -> int:
             errors="replace",
             timeout=10,
             check=False,
+            creationflags=external_tool_creationflags(),
         )
     except (OSError, subprocess.SubprocessError):
         return 0
@@ -768,12 +779,12 @@ def resolve_brush(progress_callback=None) -> str:
     for root in (BUNDLED_BRUSH_DIR, BRUSH_DIR):
         executable = find_executable(
             root,
-            ("brush.exe", "brush-app.exe", "brush", "brush-app"),
+            ("brush.exe", "brush-app.exe", "brush_app.exe", "brush", "brush-app", "brush_app"),
         )
         if executable:
             return str(executable)
 
-    discovered = shutil.which("brush") or shutil.which("brush-app")
+    discovered = shutil.which("brush") or shutil.which("brush-app") or shutil.which("brush_app")
     if discovered:
         return discovered
     raise FileNotFoundError("Brush executable not found")
@@ -911,7 +922,7 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
     p.add_argument("--frame-rate", type=float, default=5.0, help="Frames per second extracted from the video")
     p.add_argument("--start-time", default=None, help="Optional ffmpeg start time, e.g. 00:00:31")
     p.add_argument("--end-time", default=None, help="Optional ffmpeg end time, e.g. 00:06:25")
-    p.add_argument("--total-train-iters", type=int, default=10000, help="Brush training iterations")
+    p.add_argument("--total-steps", dest="total_train_iters", type=int, default=10000, help="Brush training iterations")
     p.add_argument("--use-gpu", action="store_true", help="Enable GPU flags for COLMAP if CUDA is available")
     p.add_argument("--keep-temp", action="store_true", help="Keep the temporary COLMAP/Brush working directory")
     p.add_argument("--skip-align", action="store_true", help="Skip PCA alignment with splat-transform")
@@ -1116,9 +1127,9 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             "--ImageReader.camera_model",
             "SIMPLE_RADIAL",
             "--SiftExtraction.estimate_affine_shape",
-            "0",
+            "1",
             "--SiftExtraction.domain_size_pooling",
-            "0",
+            "1",
             "--SiftExtraction.peak_threshold", "0.003",
             "--SiftExtraction.max_num_features",
             str(max_num_features),
@@ -1276,7 +1287,7 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
         brush_args = [
             brush,
             str(tmp_dir),
-            "--total-train-iters",
+            "--total-steps",
             str(args.total_train_iters),
             "--export-every",
             str(args.total_train_iters),
@@ -1375,7 +1386,7 @@ def run(
         inputfile,
         outputfile,
         "--frame-rate", str(fps),
-        "--total-train-iters", str(totaltrainiters),
+        "--total-steps", str(totaltrainiters),
     ]
     if starttime:
         sys.argv.extend(["--start-time", str(starttime)])

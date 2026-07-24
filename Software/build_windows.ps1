@@ -33,7 +33,7 @@ $ColmapDir = (Resolve-Path $ColmapDir).Path
 $BrushDir = (Resolve-Path $BrushDir).Path
 $FfmpegDir = (Resolve-Path $FfmpegDir).Path
 $ColmapExecutable = Get-ChildItem -Path $ColmapDir -Filter "colmap.exe" -File -Recurse | Select-Object -First 1
-$BrushExecutable = Get-ChildItem -Path $BrushDir -Include "brush.exe", "brush-app.exe" -File -Recurse | Select-Object -First 1
+$BrushExecutable = Get-ChildItem -Path $BrushDir -Include "brush.exe", "brush-app.exe", "brush_app.exe" -File -Recurse | Select-Object -First 1
 $FfmpegExecutable = Get-ChildItem -Path $FfmpegDir -Filter "ffmpeg.exe" -File -Recurse | Select-Object -First 1
 $FfprobeExecutable = Get-ChildItem -Path $FfmpegDir -Filter "ffprobe.exe" -File -Recurse | Select-Object -First 1
 $ColmapQtCore = Get-ChildItem -Path $ColmapDir -Filter "Qt*Core.dll" -File -Recurse | Select-Object -First 1
@@ -45,7 +45,7 @@ if (-not $ColmapExecutable) {
     throw "colmap.exe was not found below '$ColmapDir'."
 }
 if (-not $BrushExecutable) {
-    throw "brush.exe or brush-app.exe was not found below '$BrushDir'."
+    throw "brush.exe, brush-app.exe, or brush_app.exe was not found below '$BrushDir'."
 }
 if (-not $FfmpegExecutable -or -not $FfprobeExecutable) {
     throw "ffmpeg.exe and ffprobe.exe must both exist below '$FfmpegDir'."
@@ -54,9 +54,13 @@ if ($ColmapQtCore -and -not $ColmapQtPlatformPlugin) {
     throw "The selected COLMAP build uses Qt, but platforms\qwindows.dll is missing. Keep the complete official COLMAP archive or use a headless COLMAP build."
 }
 
+$PreviousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 $ColmapFeatureHelp = & $ColmapExecutable.FullName feature_extractor -h 2>&1 | Out-String
+$ColmapFeatureExitCode = $LASTEXITCODE
+$ErrorActionPreference = $PreviousErrorActionPreference
 if (
-    $LASTEXITCODE -ne 0 -or
+    $ColmapFeatureExitCode -ne 0 -or
     $ColmapFeatureHelp -notmatch [regex]::Escape("--FeatureExtraction.num_threads")
 ) {
     throw "The selected COLMAP build is incompatible. COLMAP 4.1.1 or newer is required."

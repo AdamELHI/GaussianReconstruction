@@ -29,12 +29,27 @@ Their common location can still be changed by defining
 
 Open the [official Brush releases](https://github.com/ArthurBrussee/brush/releases),
 download `brush-app-x86_64-pc-windows-msvc.zip`, and extract it into `Brush`.
-The build accepts `brush.exe` or `brush-app.exe`, including inside a nested
-directory created by the archive.
+The build accepts `brush.exe`, `brush-app.exe`, or `brush_app.exe`, including
+inside a nested directory created by the archive.
 
-The prebuilt release is sufficient. Rust, Cargo, and Visual Studio Build Tools
-are only required when compiling Brush from source and are not used by this
-packaging script.
+The official Brush 0.3.0 viewer restricts the scene viewport to the selected
+dataset image aspect ratio. For portrait datasets this leaves most of the
+window black. To build the patched 0.3.0 executable, install Rust 1.88 or newer
+and the Visual Studio C++ build tools, then run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Software\build_brush_windows.ps1
+```
+
+The script applies `Software\patches\brush-v0.3.0-full-viewport.patch` and
+places the corrected executable in `Brush\brush_app.exe`. Rust, Cargo, and
+Visual Studio Build Tools are only needed to rebuild Brush; final users do not
+need them.
+
+Smart App Control must not be in enforcement mode while compiling Brush.
+Windows blocks the unsigned Rust build scripts and procedural macro DLLs and
+does not provide per-application exceptions. Prefer a dedicated build machine
+or CI runner if Smart App Control must remain enabled.
 
 ## Download COLMAP
 
