@@ -1,8 +1,7 @@
 param(
     [string]$ColmapDir = "",
     [string]$BrushDir = "",
-    [string]$FfmpegDir = "",
-    [switch]$SkipZip
+    [string]$FfmpegDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -120,20 +119,3 @@ foreach ($BundledTool in @($BundledColmap, $BundledBrush, $BundledFfmpeg)) {
 Write-Host "Windows application folder created: $OutputDir"
 Write-Host "Executable: $OutputExe"
 Write-Host "Distribute the complete GaussianReconstruction folder, not the executable alone."
-
-if (-not $SkipZip) {
-    $ArchivePath = Join-Path (Split-Path -Parent $OutputDir) "GaussianReconstruction-Windows-x64.zip"
-    Compress-Archive -Path $OutputDir -DestinationPath $ArchivePath -CompressionLevel Optimal -Force
-
-    $Archive = Get-Item $ArchivePath
-    $ArchiveHash = (Get-FileHash -Path $ArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $DecimalMegabytes = [math]::Round($Archive.Length / 1000000, 2)
-    $BinaryMebibytes = [math]::Round($Archive.Length / 1MB, 2)
-    $HashPath = "$ArchivePath.sha256"
-    Set-Content -Path $HashPath -Value "$ArchiveHash  $($Archive.Name)" -Encoding ascii
-
-    Write-Host "Release archive: $ArchivePath"
-    Write-Host "Archive size: $($Archive.Length) bytes ($DecimalMegabytes MB / $BinaryMebibytes MiB)"
-    Write-Host "SHA-256: $ArchiveHash"
-    Write-Host "Checksum file: $HashPath"
-}

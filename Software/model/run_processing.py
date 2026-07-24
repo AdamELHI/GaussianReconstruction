@@ -329,9 +329,6 @@ def external_tool_environment() -> dict[str, str]:
             existing_library_paths + [env.get("LD_LIBRARY_PATH", "")]
         )
 
-    if os.name == "nt":
-        env["WGPU_BACKEND"] = env.get("BRUSH_WGPU_BACKEND", "vulkan")
-
     return env
 
 
@@ -465,6 +462,48 @@ def tool_output_progress(progress_callback, stage: str):
                 continue
             previous_line = output_line
             emit_progress(progress_callback, f"{stage}: {output_line}")
+
+    return report
+
+
+def brush_training_progress(progress_callback, total_steps: int):
+    if progress_callback is None:
+        return None
+
+    ansi_escape = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+    step_pattern = re.compile(r"(?<!\d)(\d+)\s*/\s*(\d+)(?!\d)")
+    report_interval = max(1, total_steps // 100)
+    last_reported_step = -report_interval
+    previous_line = None
+
+    def report(line: str) -> None:
+        nonlocal last_reported_step, previous_line
+        cleaned_line = ansi_escape.sub("", line)
+        for output_line in cleaned_line.replace("\r", "\n").splitlines():
+            output_line = output_line.strip()
+            if not output_line:
+                continue
+
+            step_match = step_pattern.search(output_line)
+            if step_match and int(step_match.group(2)) == total_steps:
+                current_step = int(step_match.group(1))
+                if (
+                    current_step != total_steps
+                    and current_step < last_reported_step + report_interval
+                ):
+                    continue
+                last_reported_step = current_step
+                percentage = min(100, round(current_step * 100 / total_steps))
+                emit_progress(
+                    progress_callback,
+                    f"Brush training: {current_step}/{total_steps} steps "
+                    f"({percentage}%).",
+                )
+                continue
+
+            if output_line != previous_line:
+                previous_line = output_line
+                emit_progress(progress_callback, f"Brush: {output_line}")
 
     return report
 
@@ -1295,7 +1334,6 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             str(brush_output_dir),
             "--export-name",
             output_name,
-            "--with-viewer"
         ]
         brush_output = run_step(
             "brush",
@@ -1303,6 +1341,10 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             progress_callback=progress_callback,
             user_message="Training the 3D model with Brush. This step can take a long time.",
             done_message="Brush has exported the first 3D file.",
+            output_callback=brush_training_progress(
+                progress_callback,
+                args.total_train_iters,
+            ),
             pause_controller=pause_controller,
         )
 
@@ -1361,7 +1403,24 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             tmp_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"Done: {ply_path}", flush=True)
-        emit_progress(progress_callback, "Processing completed.")
+        emit_progress(
+            progress_callback,
+            "Processing completed. Opening the 3D model in Brush.",
+        )
+        try:
+            run_step(
+                "brush viewer",
+                [brush, str(ply_path), "--with-viewer"],
+                progress_callback=progress_callback,
+                done_message="Brush viewer closed.",
+                output_callback=tool_output_progress(progress_callback, "Brush"),
+                pause_controller=pause_controller,
+            )
+        except (OSError, ExternalToolError) as exc:
+            emit_progress(
+                progress_callback,
+                f"The 3D file was created, but Brush could not open it: {exc}",
+            )
         return 0
 
 

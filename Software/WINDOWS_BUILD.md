@@ -32,24 +32,9 @@ download `brush-app-x86_64-pc-windows-msvc.zip`, and extract it into `Brush`.
 The build accepts `brush.exe`, `brush-app.exe`, or `brush_app.exe`, including
 inside a nested directory created by the archive.
 
-The official Brush 0.3.0 viewer restricts the scene viewport to the selected
-dataset image aspect ratio. For portrait datasets this leaves most of the
-window black. To build the patched 0.3.0 executable, install Rust 1.88 or newer
-and the Visual Studio C++ build tools, then run:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\Software\build_brush_windows.ps1
-```
-
-The script applies `Software\patches\brush-v0.3.0-full-viewport.patch` and
-places the corrected executable in `Brush\brush_app.exe`. Rust, Cargo, and
-Visual Studio Build Tools are only needed to rebuild Brush; final users do not
-need them.
-
-Smart App Control must not be in enforcement mode while compiling Brush.
-Windows blocks the unsigned Rust build scripts and procedural macro DLLs and
-does not provide per-application exceptions. Prefer a dedicated build machine
-or CI runner if Smart App Control must remain enabled.
+The prebuilt release is sufficient. Rust, Cargo, and Visual Studio Build Tools
+are only required when compiling Brush from source and are not used by this
+packaging script.
 
 ## Download COLMAP
 
@@ -105,7 +90,7 @@ The script:
 4. installs the Python build dependencies;
 5. bundles the complete COLMAP, Brush, and FFmpeg directories with the application;
 6. verifies that the packaged tool directories exist;
-7. creates the application folder and a ZIP release archive.
+7. creates the application folder.
 
 The final user does not need Python, PyInstaller, COLMAP, Brush, FFmpeg, Rust,
 or the Python packages. The executable is located at:
@@ -113,18 +98,6 @@ or the Python packages. The executable is located at:
 ```text
 Software\dist\GaussianReconstruction\GaussianReconstruction.exe
 ```
-
-The distributable archive and its checksum are created at:
-
-```text
-Software\dist\GaussianReconstruction-Windows-x64.zip
-Software\dist\GaussianReconstruction-Windows-x64.zip.sha256
-```
-
-The build prints the archive's exact byte count, decimal MB size, binary MiB
-size, and SHA-256 checksum. Services may label MiB as MB, so the displayed
-number can be smaller even when the uploaded file is byte-for-byte identical.
-Pass `-SkipZip` when only the application folder is needed.
 
 This is a PyInstaller `onedir` build: distribute the complete
 `GaussianReconstruction` folder, including its `_internal` directory. The
