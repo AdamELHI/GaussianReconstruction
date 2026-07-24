@@ -65,6 +65,14 @@ class Menu(QMainWindow):
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding,
         )
+
+        self.pause_button = QPushButton("Pause the reconstruction")
+        self.pause_button.setEnabled(False)
+        self.pause_button.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+
         self.load_button = QPushButton("Load a reconstruction")
         self.load_button.setSizePolicy(
             QSizePolicy.Policy.Expanding,
@@ -101,6 +109,7 @@ class Menu(QMainWindow):
         self.content_layout.addWidget(self.select_video_button)
         self.content_layout.addWidget(self.select_output_button)
         self.content_layout.addWidget(self.run_button)
+        self.content_layout.addWidget(self.pause_button)
         self.content_layout.addWidget(self.load_button)
         self.content_layout.addWidget(self.status_label)
         self.content_layout.addWidget(self.progress_bar)
@@ -144,12 +153,47 @@ class Menu(QMainWindow):
         self.load_button.setEnabled(not is_running)
         self.load_reconstruct_button.setEnabled(not is_running)
         self.close_button.setEnabled(not is_running)
+        self.pause_button.setEnabled(is_running)
 
         if is_running:
             self.run_button.setText("Reconstruction in progress...")
             self.progress_bar.setRange(0, 0)
         else:
             self.run_button.setText("Launch the reconstruction")
+            self.set_reconstruction_paused(False)
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(0)
+
+    def set_reconstruction_paused(self, is_paused: bool) -> None:
+        if is_paused:
+            self.pause_button.setText("Resume the reconstruction")
+            self.run_button.setText("Reconstruction paused")
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(0)
+        else:
+            self.pause_button.setText("Pause the reconstruction")
+            if self.pause_button.isEnabled():
+                self.run_button.setText("Reconstruction in progress...")
+                self.progress_bar.setRange(0, 0)
+
+    def set_reconstruction_loading(self, is_loading: bool) -> None:
+        controls_enabled = not is_loading
+        self.run_button.setEnabled(controls_enabled)
+        self.select_video_button.setEnabled(controls_enabled)
+        self.select_output_button.setEnabled(controls_enabled)
+        self.settings_button.setEnabled(controls_enabled)
+        self.load_button.setEnabled(controls_enabled)
+        self.load_reconstruct_button.setEnabled(controls_enabled)
+        self.close_button.setEnabled(controls_enabled)
+        self.pause_button.setEnabled(False)
+
+        if is_loading:
+            self.load_button.setText("Loading the reconstruction...")
+            self.load_reconstruct_button.setText("Loading the reconstruction...")
+            self.progress_bar.setRange(0, 0)
+        else:
+            self.load_button.setText("Load a reconstruction")
+            self.load_reconstruct_button.setText("Load a .ply file")
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
 
