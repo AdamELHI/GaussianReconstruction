@@ -79,6 +79,20 @@ if (-not (Test-Path $Python -PathType Leaf)) {
 if ($LASTEXITCODE -ne 0) {
     throw "Could not upgrade pip in the Windows build environment."
 }
+
+$OpenCvPackages = @(
+    "opencv-python",
+    "opencv-python-headless",
+    "opencv-contrib-python",
+    "opencv-contrib-python-headless"
+)
+
+Write-Host "Removing existing OpenCV Python packages."
+& $Python -m pip uninstall --yes @OpenCvPackages
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not remove the existing OpenCV Python packages."
+}
+
 & $Python -m pip install -r (Join-Path $ProjectDir "requirements-windows-build.txt")
 if ($LASTEXITCODE -ne 0) {
     throw "Could not install the Windows build dependencies."

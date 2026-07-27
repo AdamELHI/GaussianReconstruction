@@ -1,16 +1,10 @@
 import math
 import re
-import sys
 
 from pathlib import Path
 from typing import Any, Callable
 
 from model.paths import OUTPUT_DIR
-
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 
 DEFAULT_OUTPUT_DIR = OUTPUT_DIR
 
