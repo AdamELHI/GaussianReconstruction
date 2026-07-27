@@ -1,7 +1,6 @@
 
 
 from __future__ import annotations
-import argparse
 import math
 import os
 import re
@@ -10,9 +9,9 @@ import shutil
 import sqlite3
 import cv2 as cv
 import subprocess
-import sys
 import tempfile
 import threading
+import time
 from collections import deque
 from pathlib import Path
 import numpy as np
@@ -22,48 +21,64 @@ if os.name == "nt":
     import psutil
 
 from model.paths import (
-    BRUSH_DIR,
-    BUNDLED_BRUSH_DIR,
-    BUNDLED_COLMAP_DIR,
     BUNDLED_TOOLS_DIR,
-    COLMAP_DIR,
     LAST_RECONSTRUCTION_DIR,
-    find_executable,
+    PROJECT_ROOT,
 )
 
 
-BUNDLED_FFMPEG_DIR = BUNDLED_TOOLS_DIR / "ffmpeg"
+PROCESS_CREATION_FLAGS = (
+    subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+)
 
 
-def colmap_qt_platform_plugin_dir() -> Path | None:
-    """Locate the Qt platform plugins shipped with the Windows COLMAP bundle."""
-    if os.name != "nt":
-        return None
-
-    for root in (BUNDLED_COLMAP_DIR, COLMAP_DIR):
-        for relative_path in (
-            Path("platforms"),
-            Path("plugins") / "platforms",
-            Path("bin") / "platforms",
-        ):
-            candidate = root / relative_path
-            if (candidate / "qwindows.dll").is_file():
-                return candidate
-
-        if root.is_dir():
-            plugin = next(root.rglob("qwindows.dll"), None)
-            if plugin is not None:
-                return plugin.parent
-
-    return None
-
-
-def find_tool(root: Path, candidates: tuple[Path, ...]) -> str | None:
-    for relative_path in candidates:
-        executable = root / relative_path
-        if executable.is_file() and os.access(executable, os.X_OK):
+def tool_path(name: str, required: bool = True) -> str | None:
+    env_var = {
+        "colmap": "COLMAP_BIN",
+        "brush": "BRUSH_BIN",
+        "ffmpeg": "FFMPEG_BIN",
+        "ffprobe": "FFPROBE_BIN",
+        "splat-transform": "SPLAT_TRANSFORM",
+    }[name]
+    override = os.environ.get(env_var)
+    if override:
+        executable = Path(override).expanduser()
+        if executable.is_file():
             return str(executable)
-    return None
+        raise FileNotFoundError(f"{env_var} does not point to a file: {executable}")
+
+    if os.name == "nt":
+        candidates = {
+            "colmap": [BUNDLED_TOOLS_DIR / "colmap/bin/colmap.exe", PROJECT_ROOT / "Colmap/bin/colmap.exe"],
+            "brush": [BUNDLED_TOOLS_DIR / "brush/brush_app.exe", PROJECT_ROOT / "Brush/brush_app.exe"],
+            "ffmpeg": list((BUNDLED_TOOLS_DIR / "ffmpeg").glob("*/bin/ffmpeg.exe")),
+            "ffprobe": list((BUNDLED_TOOLS_DIR / "ffmpeg").glob("*/bin/ffprobe.exe")),
+            "splat-transform": [],
+        }[name]
+        system_names = (f"{name}.exe", f"{name}.cmd", name)
+    else:
+        candidates = {
+            "colmap": [BUNDLED_TOOLS_DIR / "colmap/bin/colmap"],
+            "brush": [
+                BUNDLED_TOOLS_DIR / "brush/brush",
+                BUNDLED_TOOLS_DIR / "brush/brush-app",
+                PROJECT_ROOT / "brush/target/release/brush",
+                PROJECT_ROOT / "brush/target/release/brush-app",
+            ],
+            "ffmpeg": [BUNDLED_TOOLS_DIR / "ffmpeg/ffmpeg"],
+            "ffprobe": [BUNDLED_TOOLS_DIR / "ffmpeg/ffprobe"],
+            "splat-transform": [],
+        }[name]
+        system_names = (name,)
+
+    discovered = next((str(path) for path in candidates if path.is_file()), None)
+    discovered = discovered or next(
+        (path for candidate in system_names if (path := shutil.which(candidate))),
+        None,
+    )
+    if discovered or not required:
+        return discovered
+    raise FileNotFoundError(f"{name} executable not found")
 
 
 def get_memory_info_bytes() -> tuple[int, int]:
@@ -91,23 +106,11 @@ def get_memory_info_bytes() -> tuple[int, int]:
         return 0, 0
 
     try:
-        memory_info = {}
-        with open("/proc/meminfo", encoding="utf-8") as file:
-            for line in file:
-                name, value = line.split(":", 1)
-                memory_info[name] = int(value.strip().split()[0]) * 1024
-        total_ram = memory_info.get("MemTotal", 0)
-        available_ram = memory_info.get("MemAvailable", 0)
-        if total_ram and available_ram:
-            return total_ram, available_ram
-    except (FileNotFoundError, OSError, ValueError, IndexError):
-        pass
-
-    try:
         page_size = os.sysconf("SC_PAGE_SIZE")
-        total_ram = int(page_size * os.sysconf("SC_PHYS_PAGES"))
-        available_ram = int(page_size * os.sysconf("SC_AVPHYS_PAGES"))
-        return total_ram, available_ram
+        return (
+            int(page_size * os.sysconf("SC_PHYS_PAGES")),
+            int(page_size * os.sysconf("SC_AVPHYS_PAGES")),
+        )
     except (AttributeError, OSError, ValueError):
         return 0, 0
 
@@ -155,9 +158,6 @@ def sequential_matching_overlap(
         overlap_cap,
         max(frame_based_overlap, temporal_overlap),
     )
-
-
-
 
 
 class PauseManager:
@@ -244,96 +244,50 @@ class ExternalToolError(RuntimeError):
     pass
 
 
-def external_tool_error_message(
-    label: str,
-    return_code: int,
-    output_lines,
-) -> str:
-    return_description = f"exit code {return_code}"
-    if return_code < 0 and os.name == "posix":
-        try:
-            return_description = (
-                f"signal {signal.Signals(-return_code).name} ({return_code})"
-            )
-        except ValueError:
-            pass
-
-    message = f"{label} failed with {return_description}."
-    output_tail = "\n".join(output_lines).strip()
-    if output_tail:
-        message += f"\nLast messages from {label}:\n{output_tail[-6000:]}"
-    else:
-        message += f"\n{label} did not provide an error message."
-    return message
-
-
-def finalize_brush_output(
-    brush_ply_path: Path,
-    output_path: Path,
-    brush_output,
-) -> Path:
-    if not brush_ply_path.is_file():
-        brush_error = (
-            "Brush stopped before the training was completed and did not "
-            "produce a new PLY file. The Brush window may have crashed."
-        )
-        output_tail = "\n".join(brush_output).strip()
-        if output_tail:
-            brush_error += f"\nLast messages from Brush:\n{output_tail[-6000:]}"
-        raise ExternalToolError(brush_error)
-
-    os.replace(brush_ply_path, output_path)
-    return output_path
-
-
-def external_tool_environment() -> dict[str, str]:
+def process_environment(
+    executable: str,
+    overrides: dict[str, str] | None = None,
+) -> dict[str, str]:
     env = os.environ.copy()
     env.pop("QT_PLUGIN_PATH", None)
     env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
 
-    qt_platform_plugins = colmap_qt_platform_plugin_dir()
-    if qt_platform_plugins is not None:
-        env["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(qt_platform_plugins)
-
-    search_paths = []
-    library_paths = []
-    search_paths.extend(
-        [
-            BUNDLED_COLMAP_DIR,
-            BUNDLED_COLMAP_DIR / "bin",
-            BUNDLED_COLMAP_DIR / "lib",
-            BUNDLED_BRUSH_DIR,
-            BUNDLED_FFMPEG_DIR,
-            COLMAP_DIR,
-            COLMAP_DIR / "bin",
-            COLMAP_DIR / "lib",
-            BRUSH_DIR,
-        ]
-    )
-    library_paths.extend(
-        [
-            BUNDLED_COLMAP_DIR / "lib",
-            COLMAP_DIR / "lib",
-        ]
-    )
-
-    existing_search_paths = [str(path) for path in search_paths if path.is_dir()]
-    if existing_search_paths:
+    executable_dir = Path(executable).parent
+    root = executable_dir.parent if executable_dir.name == "bin" else executable_dir
+    search_paths = [
+        path
+        for path in (executable_dir, root / "bin", root / "lib")
+        if path.is_dir()
+    ]
+    if search_paths:
         env["PATH"] = os.pathsep.join(
-            existing_search_paths + [env.get("PATH", "")]
+            [*(str(path) for path in search_paths), env.get("PATH", "")]
         )
 
-    existing_library_paths = [str(path) for path in library_paths if path.is_dir()]
-    if existing_library_paths and os.name == "posix":
+    library_path = root / "lib"
+    if os.name == "posix" and library_path.is_dir():
         env["LD_LIBRARY_PATH"] = os.pathsep.join(
-            existing_library_paths + [env.get("LD_LIBRARY_PATH", "")]
+            [str(library_path), env.get("LD_LIBRARY_PATH", "")]
         )
+    elif os.name == "nt":
+        qt_plugin = next(
+            (
+                path
+                for path in (
+                    root / "platforms/qwindows.dll",
+                    root / "plugins/platforms/qwindows.dll",
+                    root / "bin/platforms/qwindows.dll",
+                )
+                if path.is_file()
+            ),
+            None,
+        )
+        if qt_plugin:
+            env["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(qt_plugin.parent)
 
+    if overrides:
+        env.update(overrides)
     return env
-
-
-def external_tool_creationflags() -> int:
-    return subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
 def run_step(
@@ -345,6 +299,9 @@ def run_step(
     done_message: str | None = None,
     output_callback=None,
     pause_controller=None,
+    env_overrides: dict[str, str] | None = None,
+    heartbeat_message: str | None = None,
+    heartbeat_interval_seconds: float = 30.0,
 ) -> list[str]:
     if pause_controller:
         pause_controller.wait_if_paused()
@@ -352,21 +309,19 @@ def run_step(
         emit_progress(progress_callback, user_message)
     print(f"\n==> {label}", flush=True)
     print("$ " + " ".join(cmd), flush=True)
-    env = external_tool_environment()
-    creationflags = external_tool_creationflags()
 
     try:
         process = subprocess.Popen(
             cmd,
             cwd=str(cwd) if cwd else None,
-            env=env,
+            env=process_environment(cmd[0], env_overrides),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             errors="replace",
             bufsize=1,
             start_new_session=os.name == "posix",
-            creationflags=creationflags,
+            creationflags=PROCESS_CREATION_FLAGS,
         )
     except OSError as exc:
         emit_progress(
@@ -380,9 +335,39 @@ def run_step(
 
     recent_output = deque(maxlen=40)
     ansi_escape = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+    heartbeat_stop = threading.Event()
+    heartbeat_thread = None
+    last_output_at = time.monotonic()
+    started_at = last_output_at
+
+    if heartbeat_message and progress_callback:
+        def report_heartbeat() -> None:
+            while not heartbeat_stop.wait(heartbeat_interval_seconds):
+                if pause_controller and pause_controller.is_paused:
+                    continue
+                if time.monotonic() - last_output_at < heartbeat_interval_seconds:
+                    continue
+
+                elapsed_seconds = max(0, int(time.monotonic() - started_at))
+                hours, remainder = divmod(elapsed_seconds, 3600)
+                minutes, seconds = divmod(remainder, 60)
+                emit_progress(
+                    progress_callback,
+                    f"{heartbeat_message} "
+                    f"(elapsed {hours:02d}:{minutes:02d}:{seconds:02d}).",
+                )
+
+        heartbeat_thread = threading.Thread(
+            target=report_heartbeat,
+            name=f"{label}-heartbeat",
+            daemon=True,
+        )
+        heartbeat_thread.start()
+
     try:
         assert process.stdout is not None
         for line in process.stdout:
+            last_output_at = time.monotonic()
             print(line, end="", flush=True)
             cleaned_line = ansi_escape.sub("", line)
             for output_line in cleaned_line.replace("\r", "\n").splitlines():
@@ -393,17 +378,17 @@ def run_step(
                 output_callback(line)
         return_code = process.wait()
     finally:
+        heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=1)
         if pause_controller:
             pause_controller.detach_process(process)
-
     if return_code != 0:
-        raise ExternalToolError(
-            external_tool_error_message(
-                label,
-                return_code,
-                recent_output,
-            )
-        )
+        output_tail = "\n".join(recent_output).strip()
+        message = f"{label} failed with exit code {return_code}."
+        if output_tail:
+            message += f"\nLast messages from {label}:\n{output_tail[-6000:]}"
+        raise ExternalToolError(message)
     if done_message:
         emit_progress(progress_callback, done_message)
     return list(recent_output)
@@ -472,6 +457,7 @@ def brush_training_progress(progress_callback, total_steps: int):
 
     ansi_escape = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
     step_pattern = re.compile(r"(?<!\d)(\d+)\s*/\s*(\d+)(?!\d)")
+    logged_step_pattern = re.compile(r"\b(?:refine|eval)\s+iter\s+(\d+)\b", re.IGNORECASE)
     report_interval = max(1, total_steps // 100)
     last_reported_step = -report_interval
     previous_line = None
@@ -487,6 +473,15 @@ def brush_training_progress(progress_callback, total_steps: int):
             step_match = step_pattern.search(output_line)
             if step_match and int(step_match.group(2)) == total_steps:
                 current_step = int(step_match.group(1))
+            else:
+                logged_step_match = logged_step_pattern.search(output_line)
+                current_step = (
+                    int(logged_step_match.group(1))
+                    if logged_step_match
+                    else None
+                )
+
+            if current_step is not None:
                 if (
                     current_step != total_steps
                     and current_step < last_reported_step + report_interval
@@ -508,77 +503,44 @@ def brush_training_progress(progress_callback, total_steps: int):
     return report
 
 
-def resolve_executable(names: list[str], env_var: str | None = None) -> str:
-    if env_var and os.environ.get(env_var):
-        return os.environ[env_var]
-    for name in names:
-        found = shutil.which(name)
-        if found:
-            return found
-    raise FileNotFoundError(f"Could not find any of {names}")
-
-
-def resolve_ffmpeg_tool(name: str) -> str:
-    env_var = f"{name.upper()}_BIN"
-    override = os.environ.get(env_var)
-    if override:
-        executable = Path(override).expanduser()
-        if executable.is_file() and os.access(executable, os.X_OK):
-            return str(executable)
-        raise FileNotFoundError(
-            f"{env_var} does not point to an executable file: {executable}"
-        )
-
-    bundled = find_executable(
-        BUNDLED_FFMPEG_DIR,
-        (f"{name}.exe", name),
-    )
-    if bundled:
-        return str(bundled)
-
-    return resolve_executable([name, f"{name}.exe"])
-
-
-def probe_video_field_order(input_path: Path) -> str:
-    ffprobe = resolve_ffmpeg_tool("ffprobe")
+def command_output(command: list[str], timeout: int = 10) -> str | None:
     try:
         result = subprocess.run(
-            [
-                ffprobe,
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=field_order",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                str(input_path),
-            ],
-            env=external_tool_environment(),
+            command,
+            env=process_environment(command[0]),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             errors="replace",
-            timeout=30,
+            timeout=timeout,
             check=False,
-            creationflags=external_tool_creationflags(),
+            creationflags=PROCESS_CREATION_FLAGS,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise ExternalToolError(
-            f"Could not inspect the video field order with FFprobe: {exc}"
-        ) from exc
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout if result.returncode == 0 else None
 
-    if result.returncode != 0:
-        raise ExternalToolError(
-            external_tool_error_message(
-                "ffprobe",
-                result.returncode,
-                result.stdout.splitlines(),
-            )
-        )
 
-    for line in result.stdout.splitlines():
+def probe_video_field_order(input_path: Path) -> str:
+    output = command_output(
+        [
+            tool_path("ffprobe"),
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=field_order",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(input_path),
+        ],
+        timeout=30,
+    )
+    if output is None:
+        raise ExternalToolError("FFprobe could not inspect the video field order.")
+
+    for line in output.splitlines():
         field_order = line.strip().lower()
         if field_order:
             return field_order
@@ -603,7 +565,7 @@ def normalize_video_if_interlaced(
     run_step(
         "ffmpeg video normalization",
         [
-            resolve_ffmpeg_tool("ffmpeg"),
+            tool_path("ffmpeg"),
             "-y",
             "-v",
             "error",
@@ -647,35 +609,12 @@ def normalize_video_if_interlaced(
     return normalized_path
 
 
-def resolve_colmap() -> str:
-    override = os.environ.get("COLMAP_BIN")
-    if override:
-        return override
-
-    for root in (BUNDLED_COLMAP_DIR, COLMAP_DIR):
-        executable = find_executable(root, ("colmap.exe", "colmap"))
-        if executable:
-            return str(executable)
-    return resolve_executable(["colmap", "colmap.exe"])
-
-
 def colmap_supports_cuda(colmap_executable: str) -> bool:
-    try:
-        result = subprocess.run(
-            [colmap_executable, "-h"],
-            env=external_tool_environment(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            errors="replace",
-            timeout=10,
-            check=False,
-            creationflags=external_tool_creationflags(),
-        )
-    except (OSError, subprocess.SubprocessError):
+    output = command_output([colmap_executable, "-h"])
+    if output is None:
         return False
 
-    version_lines = "\n".join(result.stdout.splitlines()[:5]).lower()
+    version_lines = "\n".join(output.splitlines()[:5]).lower()
     if "without cuda" in version_lines:
         return False
     return "with cuda" in version_lines
@@ -686,24 +625,10 @@ def cuda_gpu_available() -> bool:
     if not nvidia_smi:
         return False
 
-    try:
-        result = subprocess.run(
-            [nvidia_smi, "-L"],
-            env=external_tool_environment(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            errors="replace",
-            timeout=10,
-            check=False,
-            creationflags=external_tool_creationflags(),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-    return result.returncode == 0 and any(
+    output = command_output([nvidia_smi, "-L"])
+    return output is not None and any(
         line.strip().startswith("GPU ")
-        for line in result.stdout.splitlines()
+        for line in output.splitlines()
     )
 
 
@@ -712,30 +637,18 @@ def available_gpu_memory_bytes() -> int:
     if not nvidia_smi:
         return 0
 
-    try:
-        result = subprocess.run(
-            [
-                nvidia_smi,
-                "--query-gpu=memory.free",
-                "--format=csv,noheader,nounits",
-            ],
-            env=external_tool_environment(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            errors="replace",
-            timeout=10,
-            check=False,
-            creationflags=external_tool_creationflags(),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return 0
-
-    if result.returncode != 0:
+    output = command_output(
+        [
+            nvidia_smi,
+            "--query-gpu=memory.free",
+            "--format=csv,noheader,nounits",
+        ]
+    )
+    if output is None:
         return 0
 
     free_memory_mib = []
-    for line in result.stdout.splitlines():
+    for line in output.splitlines():
         try:
             free_memory_mib.append(int(line.strip()))
         except ValueError:
@@ -766,35 +679,28 @@ def configure_colmap_gpu(
 ) -> bool:
     if not gpu_requested:
         message = "COLMAP GPU acceleration is disabled; using the CPU."
-        print(message)
-        emit_progress(progress_callback, message)
-        return False
-
-    if not colmap_supports_cuda(colmap_executable):
+        enabled = False
+    elif not colmap_supports_cuda(colmap_executable):
         message = (
             "The bundled COLMAP does not report CUDA support; "
             "feature extraction and matching will use the CPU."
         )
-        print(message)
-        emit_progress(progress_callback, message)
-        return False
-
-    if not cuda_gpu_available():
+        enabled = False
+    elif not cuda_gpu_available():
         message = (
             "COLMAP supports CUDA, but no compatible NVIDIA GPU was detected; "
             "feature extraction and matching will use the CPU."
         )
-        print(message)
-        emit_progress(progress_callback, message)
-        return False
-
-    message = (
-        "COLMAP CUDA support detected; feature extraction and matching "
-        "will use the GPU."
-    )
+        enabled = False
+    else:
+        message = (
+            "COLMAP CUDA support detected; feature extraction and matching "
+            "will use the GPU."
+        )
+        enabled = True
     print(message)
     emit_progress(progress_callback, message)
-    return True
+    return enabled
 
 
 def colmap_database_match_count(database_path: Path) -> int:
@@ -810,80 +716,29 @@ def colmap_database_match_count(database_path: Path) -> int:
     return int(row[0]) if row else 0
 
 
-def resolve_brush(progress_callback=None) -> str:
-    override = os.environ.get("BRUSH_BIN")
-    if override and Path(override).expanduser().is_file():
-        return str(Path(override).expanduser())
-
-    for root in (BUNDLED_BRUSH_DIR, BRUSH_DIR):
-        executable = find_executable(
-            root,
-            ("brush.exe", "brush-app.exe", "brush_app.exe", "brush", "brush-app", "brush_app"),
-        )
-        if executable:
-            return str(executable)
-
-    discovered = shutil.which("brush") or shutil.which("brush-app") or shutil.which("brush_app")
-    if discovered:
-        return discovered
-    raise FileNotFoundError("Brush executable not found")
-
-
-
-
-def splat_transform_executable() -> str:
-    """Resolve ``splat-transform`` for ``subprocess`` (Windows needs ``.cmd`` path)."""
-    override = os.environ.get("SPLAT_TRANSFORM")
-    if override:
-        return override
-    bundled = find_executable(
-        BUNDLED_TOOLS_DIR / "splat-transform",
-        ("splat-transform.exe", "splat-transform.cmd", "splat-transform"),
-    )
-    if bundled:
-        return str(bundled)
-    return resolve_executable(["splat-transform", "splat-transform.cmd", "splat-transform.exe"])
-
-
-def load_ply_point_cloud(ply_path: Path) -> np.ndarray:
-    """Load vertex x,y,z from a .ply as ``(N, 3)`` float64 (uses ``plyfile``)."""
-    path = ply_path.resolve()
-    if not path.is_file():
-        raise FileNotFoundError(path)
-    ply = PlyData.read(str(path))
-    vertex = ply["vertex"]
-    x = np.asarray(vertex["x"], dtype=np.float64)
-    y = np.asarray(vertex["y"], dtype=np.float64)
-    z = np.asarray(vertex["z"], dtype=np.float64)
-    return np.column_stack((x, y, z))
-
-
-def pca_xyz(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Covariance PCA: principal directions."""
-    if points.ndim != 2 or points.shape[1] != 3:
-        raise ValueError("points must have shape (N, 3)")
-    n = points.shape[0]
-    if n < 2:
-        raise ValueError("need at least 2 points for PCA")
-    mean = points.mean(axis=0)
-    xc = points - mean
-    cov = (xc.T @ xc) / (n - 1)
-    evals, evecs = np.linalg.eigh(cov)
-    order = np.argsort(evals)[::-1]
-    V = evecs[:, order]
-    components = V.T
-    return mean, components
-
-
 def align_ply(ply_path: Path, progress_callback=None, pause_controller=None) -> None:
     """PCA-align the exported splat using splat-transform."""
-    ply_path = ply_path.resolve()
     if pause_controller:
         pause_controller.wait_if_paused()
-    points = load_ply_point_cloud(ply_path)
+
+    vertex = PlyData.read(str(ply_path))["vertex"]
+    points = np.column_stack(
+        tuple(
+            np.asarray(vertex[axis], dtype=np.float64)
+            for axis in ("x", "y", "z")
+        )
+    )
     if points.size == 0:
         return
-    mean, components = pca_xyz(points)
+    if len(points) < 2:
+        raise ValueError("At least two points are required for PCA alignment.")
+
+    mean = points.mean(axis=0)
+    centered_points = points - mean
+    _, eigenvectors = np.linalg.eigh(
+        (centered_points.T @ centered_points) / (len(points) - 1)
+    )
+    components = eigenvectors[:, ::-1].T
     if pause_controller:
         pause_controller.wait_if_paused()
     R = np.asarray(components, dtype=np.float64)
@@ -901,7 +756,7 @@ def align_ply(ply_path: Path, progress_callback=None, pause_controller=None) -> 
         run_step(
             "splat-transform (PCA align)",
             [
-                splat_transform_executable(),
+                tool_path("splat-transform"),
                 str(ply_path),
                 f"--rotate={ex},{ey},{ez}",
                 f"--translate={tx},{ty},{tz}",
@@ -954,52 +809,37 @@ def get_frames_sharpness(
 
     return np.asarray(list_sharpness, dtype=np.float64)
 
-def main(is_loading, progress_callback=None, pause_controller=None) -> int:
-    p = argparse.ArgumentParser(description="Run Opencv + COLMAP + Brush to reconstruct a 3D splat from a video")
-    p.add_argument("input_file", help="Absolute path to the input video file")
-    p.add_argument("output_file", help="Absolute path for the exported .ply asset")
-    p.add_argument("--frame-rate", type=float, default=5.0, help="Frames per second extracted from the video")
-    p.add_argument("--start-time", default=None, help="Optional ffmpeg start time, e.g. 00:00:31")
-    p.add_argument("--end-time", default=None, help="Optional ffmpeg end time, e.g. 00:06:25")
-    p.add_argument("--total-steps", dest="total_train_iters", type=int, default=10000, help="Brush training iterations")
-    p.add_argument("--use-gpu", action="store_true", help="Enable GPU flags for COLMAP if CUDA is available")
-    p.add_argument("--keep-temp", action="store_true", help="Keep the temporary COLMAP/Brush working directory")
-    p.add_argument("--skip-align", action="store_true", help="Skip PCA alignment with splat-transform")
-    args = p.parse_args()
-    if not np.isfinite(args.frame_rate) or args.frame_rate <= 0:
+def main(
+    input_file,
+    output_file,
+    frame_rate=5.0,
+    start_time=None,
+    end_time=None,
+    total_train_iters=10000,
+    use_gpu=True,
+    keep_temp=False,
+    skip_align=False,
+    is_loading=False,
+    progress_callback=None,
+    pause_controller=None,
+) -> int:
+    if not np.isfinite(frame_rate) or frame_rate <= 0:
         raise ValueError("Frame rate must be greater than zero.")
     if pause_controller:
         pause_controller.wait_if_paused()
 
-    input_path = Path(args.input_file).expanduser()
-    output_path = Path(args.output_file).expanduser()
+    input_path = Path(input_file).expanduser()
+    output_path = Path(output_file).expanduser()
+    if not input_path.is_file():
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+
     output_dir = output_path.parent
     output_name = output_path.name
     output_dir.mkdir(parents=True, exist_ok=True)
-
-
     emit_progress(
         progress_callback,
         "Checking the video and preparing the output folder.",
     )
-
-    
-    try:
-        input_path = input_path.resolve()
-        output_path = output_path.resolve()
-    except OSError as e:
-        print(f"run_processing: invalid path: {e}", file=sys.stderr)
-        return 1
-
-    if not input_path.is_file():
-        print(f"run_processing: input is not a readable file: {input_path}", file=sys.stderr)
-        return 1
-    if not os.access(input_path, os.R_OK):
-        print(f"run_processing: input is not a readable file: {input_path}", file=sys.stderr)
-        return 1
-
-
-
     tmp_dir = LAST_RECONSTRUCTION_DIR
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir)
@@ -1011,18 +851,15 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
         "Setting up the temporary folder for source images.",
     )
 
-
-
     emit_progress(
         progress_callback,
         "Checking the dependencies required for the reconstruction.",
     )
-    colmap = resolve_colmap()
-    brush = resolve_brush(progress_callback)
+    brush = tool_path("brush")
     if is_loading :
         brush_args = [
             brush,
-            sys.argv[1],
+            str(input_path),
             "--with-viewer"
         ]
         run_step(
@@ -1035,9 +872,10 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             pause_controller=pause_controller,
         )
     else :
+        colmap = tool_path("colmap")
         use_colmap_gpu = configure_colmap_gpu(
             colmap,
-            args.use_gpu,
+            use_gpu,
             progress_callback,
         )
         print("The next steps in the implementation process are :")
@@ -1047,8 +885,6 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
         print("  4. COLMAP mapper")
         print("  5. Brush training/export")
         print("  6. Optional splat-transform cleanup/alignment")
-    
-        
 
         processing_input_path = normalize_video_if_interlaced(
             input_path,
@@ -1073,15 +909,15 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
 
         snapshot_every = 1
 
-        if args.start_time:
-            h, m, sec = map(int, args.start_time.split(":"))
+        if start_time:
+            h, m, sec = map(int, start_time.split(":"))
             start_frame = int((h * 3600 + m * 60 + sec) * fps)
             nb_frame = start_frame
 
         next_snapshot = nb_frame
 
-        if args.end_time:
-            h, m, sec = map(int, args.end_time.split(":"))
+        if end_time:
+            h, m, sec = map(int, end_time.split(":"))
             end_frame = min(
                 end_frame,
                 int((h * 3600 + m * 60 + sec) * fps),
@@ -1124,14 +960,14 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
 
                 if np.isfinite(score_mean) and score_mean > 0:
                     interval = int(
-                        (fps / args.frame_rate) * (sharpness / score_mean)
+                        (fps / frame_rate) * (sharpness / score_mean)
                     )
                 else:
-                    interval = int(fps / args.frame_rate)
+                    interval = int(fps / frame_rate)
 
                 interval = min(
                     interval,
-                    int(1.5 * fps / args.frame_rate),
+                    int(1.5 * fps / frame_rate),
                 )
 
                 snapshot_every = max(1, interval)
@@ -1145,8 +981,6 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
         video_duration_seconds = sharpness_index / fps
         print(f"{nb_saved} images extracted")
 
-
-        # COLMAP feature extraction 
 
         max_num_features, num_threads = colmap_resource_limits()
         print(
@@ -1184,7 +1018,10 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             "feature_extractor",
             feature_args,
             progress_callback=progress_callback,
-            user_message="Searching for recognizable points in each image.",
+            user_message=(
+                "Searching for recognizable points in each image "
+                f"using {'the CUDA GPU' if use_colmap_gpu else 'the CPU'}."
+            ),
             done_message="Important points detected in the images.",
             output_callback=indexed_colmap_progress(
                 progress_callback,
@@ -1194,8 +1031,6 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             pause_controller=pause_controller,
         )
 
-
-        #Colmap Matching : 
 
         max_num_matches, num_threads = colmap_resource_limits()
         max_num_matches = min(max_num_features, max_num_matches)
@@ -1218,7 +1053,6 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             f"threads={num_threads}, overlap={matching_overlap}"
         )
 
-        #Sequential matching arguments
         matcher_args = [
             colmap,
             "sequential_matcher",
@@ -1232,18 +1066,6 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             
         ]
 
-        #exhaustive_matching arguments
-        matcher_args2 = [
-            colmap,
-            "exhaustive_matcher",
-            "--database_path",
-            str(tmp_dir / "database.db"),
-            "--FeatureMatching.max_num_matches", str(max_num_matches),
-            "--FeatureMatching.guided_matching", "1",
-            "--FeatureMatching.num_threads", str(num_threads),
-        ]
-
-
         if use_colmap_gpu:
             matcher_args.extend(["--FeatureMatching.use_gpu", "1"])
         else:
@@ -1254,7 +1076,10 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             "sequential_matcher",
             matcher_args,
             progress_callback=progress_callback,
-            user_message="Comparing images to find camera movement.",
+            user_message=(
+                "Comparing images to find camera movement "
+                f"using {'the CUDA GPU' if use_colmap_gpu else 'the CPU'}."
+            ),
             output_callback=indexed_colmap_progress(
                 progress_callback,
                 "Matching",
@@ -1277,8 +1102,6 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
                 )
             raise ExternalToolError(matching_error)
         emit_progress(progress_callback, "Images linked together.")
-
-        #Colmap Mapping 
 
         sparse_dir = tmp_dir / "sparse"
         sparse_dir.mkdir(parents=True, exist_ok=True)
@@ -1327,9 +1150,9 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             brush,
             str(tmp_dir),
             "--total-steps",
-            str(args.total_train_iters),
+            str(total_train_iters),
             "--export-every",
-            str(args.total_train_iters),
+            str(total_train_iters),
             "--export-path",
             str(brush_output_dir),
             "--export-name",
@@ -1343,24 +1166,27 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
             done_message="Brush has exported the first 3D file.",
             output_callback=brush_training_progress(
                 progress_callback,
-                args.total_train_iters,
+                total_train_iters,
             ),
             pause_controller=pause_controller,
+            env_overrides={
+                "RUST_LOG": "brush_cli=info,brush_app=info",
+            },
+            heartbeat_message="Brush training is still running",
         )
-
-        ply_path = finalize_brush_output(
-            brush_ply_path,
-            output_path,
-            brush_output,
-        )
-
-        try:
-            splat_transform = splat_transform_executable()
-        except FileNotFoundError:
-            splat_transform = None
-
-        #splat_transform using PCA to align the exported splat (optional)
-
+        if not brush_ply_path.is_file():
+            output_tail = "\n".join(brush_output).strip()
+            raise ExternalToolError(
+                "Brush stopped without producing a PLY file."
+                + (
+                    f"\nLast messages from Brush:\n{output_tail[-6000:]}"
+                    if output_tail
+                    else ""
+                )
+            )
+        os.replace(brush_ply_path, output_path)
+        ply_path = output_path
+        splat_transform = tool_path("splat-transform", required=False)
         if splat_transform:
             temp_ply = tempfile.NamedTemporaryFile(suffix=".ply", dir=str(output_dir), delete=False)
             temp_ply.close()
@@ -1387,15 +1213,15 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
                 "Optional cleaning is ignored; the relevant tool is not available.",
             )
 
-        if not args.skip_align and splat_transform:
+        if not skip_align and splat_transform:
             align_ply(ply_path, progress_callback, pause_controller)
-        elif args.skip_align:
+        elif skip_align:
             emit_progress(
                 progress_callback,
                 "Final alignment is skipped according to the chosen parameters.",
             )
 
-        if not args.keep_temp:
+        if not keep_temp:
             if pause_controller:
                 pause_controller.wait_if_paused()
             emit_progress(progress_callback, "Deleting temporary files.")
@@ -1424,9 +1250,6 @@ def main(is_loading, progress_callback=None, pause_controller=None) -> int:
         return 0
 
 
-
-
-
 def run(
     inputfile,
     outputfile,
@@ -1440,35 +1263,27 @@ def run(
     progress_callback=None,
     pause_controller=None,
 ):
-    sys.argv = [
-        "run_processing.py",
+    return main(
         inputfile,
         outputfile,
-        "--frame-rate", str(fps),
-        "--total-steps", str(totaltrainiters),
-    ]
-    if starttime:
-        sys.argv.extend(["--start-time", str(starttime)])
-    if endtime:
-        sys.argv.extend(["--end-time", str(endtime)])
-    if usegpu:
-        sys.argv.append("--use-gpu")
-    if keeptemp:
-        sys.argv.append("--keep-temp")
-    if skipalign:
-        sys.argv.append("--skip-align")
-
-    return main(
-        False,
+        frame_rate=fps,
+        start_time=starttime,
+        end_time=endtime,
+        total_train_iters=totaltrainiters,
+        use_gpu=usegpu,
+        keep_temp=keeptemp,
+        skip_align=skipalign,
         progress_callback=progress_callback,
         pause_controller=pause_controller,
     )
 
+
 def load(inputfile, progress_callback=None):
-    sys.argv = [
-        "run_processing.py",
-        inputfile,inputfile
-    ]
-    return main(True, progress_callback=progress_callback)
+    return main(
+        inputfile,
+        inputfile,
+        is_loading=True,
+        progress_callback=progress_callback,
+    )
 
 
