@@ -93,7 +93,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Could not remove the existing OpenCV Python packages."
 }
 
-& $Python -m pip install -r (Join-Path $ProjectDir "requirements-windows-build.txt")
+& $Python -m pip install -r (Join-Path $InstallationRoot "requirements.txt")
 if ($LASTEXITCODE -ne 0) {
     throw "Could not install the Windows build dependencies."
 }

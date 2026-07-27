@@ -2,8 +2,8 @@
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-workspace_dir="$(dirname -- "$(dirname -- "$script_dir")")"
-bundle_dir="${1:-$workspace_dir/Colmap}"
+project_dir="$(dirname -- "$script_dir")"
+bundle_dir="${1:-$project_dir/Colmap}"
 colmap_executable="${COLMAP_BIN:-$(command -v colmap || true)}"
 extra_library_path="${COLMAP_EXTRA_LIBRARY_PATH:-}"
 

@@ -4,13 +4,13 @@ from pathlib import Path
 
 
 software_dir = Path(SPECPATH)
-workspace_dir = software_dir.parent.parent
+project_dir = software_dir.parent
 
 colmap_dir = Path(
-    os.environ.get("COLMAP_BUNDLE_DIR", workspace_dir / "Colmap")
+    os.environ.get("COLMAP_BUNDLE_DIR", project_dir / "Colmap")
 ).expanduser().resolve()
 brush_root = Path(
-    os.environ.get("BRUSH_BUNDLE_DIR", workspace_dir / "brush")
+    os.environ.get("BRUSH_BUNDLE_DIR", project_dir / "Brush")
 ).expanduser().resolve()
 ffmpeg_executable = Path(
     os.environ.get("FFMPEG_BIN") or shutil.which("ffmpeg") or ""
