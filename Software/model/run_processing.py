@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import cv2 as cv
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -30,6 +31,12 @@ from model.paths import (
 PROCESS_CREATION_FLAGS = (
     subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 )
+IS_LINUX = sys.platform.startswith("linux")
+BRUSH_TRAIN_ITERS_OPTION = (
+    "--total-train-iters" if IS_LINUX else "--total-steps"
+)
+COLMAP_EXTRACTION_OPTIONS = "SiftExtraction" if IS_LINUX else "FeatureExtraction"
+COLMAP_MATCHING_OPTIONS = "SiftMatching" if IS_LINUX else "FeatureMatching"
 
 
 def tool_path(name: str, required: bool = True) -> str | None:
@@ -1008,13 +1015,13 @@ def main(
             "--SiftExtraction.peak_threshold", "0.003",
             "--SiftExtraction.max_num_features",
             str(max_num_features),
-            "--FeatureExtraction.num_threads",
+            f"--{COLMAP_EXTRACTION_OPTIONS}.num_threads",
             str(num_threads)
         ]
         if use_colmap_gpu:
-            feature_args.extend(["--FeatureExtraction.use_gpu", "1"])
+            feature_args.extend([f"--{COLMAP_EXTRACTION_OPTIONS}.use_gpu", "1"])
         else:
-            feature_args.extend(["--FeatureExtraction.use_gpu", "0"])
+            feature_args.extend([f"--{COLMAP_EXTRACTION_OPTIONS}.use_gpu", "0"])
 
         run_step(
             "feature_extractor",
@@ -1062,16 +1069,16 @@ def main(
             str(tmp_dir / "database.db"),
             "--SequentialMatching.overlap",
             str(matching_overlap),
-            "--FeatureMatching.max_num_matches", str(max_num_matches),
-            "--FeatureMatching.guided_matching", "1",
-            "--FeatureMatching.num_threads", str(num_threads),
+            f"--{COLMAP_MATCHING_OPTIONS}.max_num_matches", str(max_num_matches),
+            f"--{COLMAP_MATCHING_OPTIONS}.guided_matching", "1",
+            f"--{COLMAP_MATCHING_OPTIONS}.num_threads", str(num_threads),
             
         ]
 
         if use_colmap_gpu:
-            matcher_args.extend(["--FeatureMatching.use_gpu", "1"])
+            matcher_args.extend([f"--{COLMAP_MATCHING_OPTIONS}.use_gpu", "1"])
         else:
-            matcher_args.extend(["--FeatureMatching.use_gpu", "0"])
+            matcher_args.extend([f"--{COLMAP_MATCHING_OPTIONS}.use_gpu", "0"])
         
         
         matcher_output = run_step(
@@ -1151,7 +1158,7 @@ def main(
         brush_args = [
             brush,
             str(tmp_dir),
-            "--total-steps",
+            BRUSH_TRAIN_ITERS_OPTION,
             str(total_train_iters),
             "--export-every",
             str(total_train_iters),
