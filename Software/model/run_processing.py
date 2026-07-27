@@ -899,6 +899,8 @@ def main(
         "Checking the dependencies required for the reconstruction.",
     )
     brush = tool_path("brush")
+    brush_working_dir = Path(tempfile.gettempdir()) / "gr-brush"
+    (brush_working_dir / "target").mkdir(parents=True, exist_ok=True)
     if is_loading :
         brush_args = [
             brush,
@@ -913,6 +915,7 @@ def main(
             done_message="Visualization is completed.",
             output_callback=tool_output_progress(progress_callback, "Brush"),
             pause_controller=pause_controller,
+            cwd=brush_working_dir,
         )
     else :
         colmap = tool_path("colmap")
@@ -1213,8 +1216,10 @@ def main(
                 total_train_iters,
             ),
             pause_controller=pause_controller,
+            cwd=brush_working_dir,
             env_overrides={
                 "RUST_LOG": "brush_cli=info,brush_app=info",
+                "RUST_BACKTRACE": "1",
             },
             heartbeat_message="Brush training is still running",
         )
@@ -1285,6 +1290,7 @@ def main(
                 done_message="Brush viewer closed.",
                 output_callback=tool_output_progress(progress_callback, "Brush"),
                 pause_controller=pause_controller,
+                cwd=brush_working_dir,
             )
         except (OSError, ExternalToolError) as exc:
             emit_progress(
