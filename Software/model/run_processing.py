@@ -23,6 +23,7 @@ if os.name == "nt":
 
 from model.paths import (
     BUNDLED_TOOLS_DIR,
+    FROZEN,
     LAST_RECONSTRUCTION_DIR,
     PROJECT_ROOT,
 )
@@ -80,11 +81,23 @@ def tool_path(name: str, required: bool = True) -> str | None:
         }[name]
         system_names = (name,)
 
-    discovered = next((str(path) for path in candidates if path.is_file()), None)
-    discovered = discovered or next(
-        (path for candidate in system_names if (path := shutil.which(candidate))),
+    discovered = next(
+        (str(path.resolve()) for path in candidates if path.is_file()),
         None,
     )
+    if discovered is None and FROZEN and name == "colmap":
+        raise FileNotFoundError(
+            f"Bundled COLMAP executable not found: {candidates[0]}"
+        )
+    if discovered is None:
+        discovered = next(
+            (
+                path
+                for candidate in system_names
+                if (path := shutil.which(candidate))
+            ),
+            None,
+        )
     if discovered or not required:
         return discovered
     raise FileNotFoundError(f"{name} executable not found")
@@ -619,14 +632,35 @@ def normalize_video_if_interlaced(
 
 
 def colmap_supports_cuda(colmap_executable: str) -> bool:
-    output = command_output([colmap_executable, "-h"])
-    if output is None:
+    general_help = command_output([colmap_executable, "-h"])
+    if general_help and "without cuda" in general_help.lower():
         return False
+    if general_help and "with cuda" in general_help.lower():
+        return True
 
-    version_lines = "\n".join(output.splitlines()[:5]).lower()
-    if "without cuda" in version_lines:
-        return False
-    return "with cuda" in version_lines
+    feature_help = command_output(
+        [colmap_executable, "feature_extractor", "-h"]
+    )
+    return (
+        feature_help is not None
+        and f"--{COLMAP_EXTRACTION_OPTIONS}.use_gpu" in feature_help
+    )
+
+
+def report_colmap_identity(colmap_executable: str, progress_callback=None) -> None:
+    resolved_path = Path(colmap_executable).resolve()
+    help_output = command_output([str(resolved_path), "-h"])
+    version_line = next(
+        (
+            line.strip()
+            for line in (help_output or "").splitlines()
+            if "colmap" in line.lower() and any(char.isdigit() for char in line)
+        ),
+        "version unavailable",
+    )
+    message = f"COLMAP executable: {resolved_path} ({version_line})."
+    print(message)
+    emit_progress(progress_callback, message)
 
 
 def cuda_gpu_available() -> bool:
@@ -882,6 +916,7 @@ def main(
         )
     else :
         colmap = tool_path("colmap")
+        report_colmap_identity(colmap, progress_callback)
         use_colmap_gpu = configure_colmap_gpu(
             colmap,
             use_gpu,
