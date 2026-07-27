@@ -62,6 +62,8 @@ def tool_path(name: str, required: bool = True) -> str | None:
             "brush": [
                 BUNDLED_TOOLS_DIR / "brush/brush",
                 BUNDLED_TOOLS_DIR / "brush/brush-app",
+                PROJECT_ROOT / "Brush/target/release/brush",
+                PROJECT_ROOT / "Brush/target/release/brush-app",
                 PROJECT_ROOT / "brush/target/release/brush",
                 PROJECT_ROOT / "brush/target/release/brush-app",
             ],
