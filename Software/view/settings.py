@@ -20,6 +20,7 @@ class Settings(QDialog):
         "use_gpu": True,
         "keep_temp": False,
         "skip_align": False,
+        "colmap_track": False,
     }
 
     def __init__(self, parameters=None, parent=None):
@@ -77,9 +78,13 @@ class Settings(QDialog):
         self.skip_align_checkbox = QCheckBox("Skip PCA alignment (not recommended)")
         self.skip_align_checkbox.setChecked(bool(self.parameters["skip_align"]))
 
+        self.load_colmap_checkbox = QCheckBox("Open the COLMAP model in its GUI")
+        self.load_colmap_checkbox.setChecked(bool(self.parameters["colmap_track"]))
+
         options_layout.addWidget(self.use_gpu_checkbox)
         options_layout.addWidget(self.keep_temp_checkbox)
         options_layout.addWidget(self.skip_align_checkbox)
+        options_layout.addWidget(self.load_colmap_checkbox)
 
         self.button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -110,4 +115,5 @@ class Settings(QDialog):
             "use_gpu": self.use_gpu_checkbox.isChecked(),
             "keep_temp": self.keep_temp_checkbox.isChecked(),
             "skip_align": self.skip_align_checkbox.isChecked(),
+            "colmap_track": self.load_colmap_checkbox.isChecked(),
         }

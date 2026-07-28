@@ -880,6 +880,7 @@ def main(
     is_loading=False,
     progress_callback=None,
     pause_controller=None,
+    colmap_track=False,
 ) -> int:
     if not np.isfinite(frame_rate) or frame_rate <= 0:
         raise ValueError("Frame rate must be greater than zero.")
@@ -1209,6 +1210,30 @@ def main(
             output_callback=mapping_progress(progress_callback, nb_saved),
             pause_controller=pause_controller,
         )
+        if colmap_track:
+            colmap_model_dir = sparse_dir / "0"
+            gui_colmap = os.environ.get(
+                "COLMAP_GUI_BIN",
+                "/usr/bin/colmap" if IS_LINUX else colmap,
+            )
+            gui_args = [
+                gui_colmap,
+                "gui",
+                "--import_path",
+                str(colmap_model_dir),
+                "--database_path",
+                str(tmp_dir / "database.db"),
+                "--image_path",
+                str(images_dir),
+            ]
+            run_step(
+                "COLMAP GUI",
+                gui_args,
+                progress_callback=progress_callback,
+                user_message="Opening the reconstructed camera model in COLMAP.",
+                done_message="COLMAP GUI closed.",
+                pause_controller=pause_controller,
+            )
 
         # Brush training (gaussian) and export
 
@@ -1332,6 +1357,7 @@ def run(
     usegpu=True,
     keeptemp=False,
     skipalign=False,
+    colmaptrack=False,
     progress_callback=None,
     pause_controller=None,
 ):
@@ -1345,6 +1371,7 @@ def run(
         use_gpu=usegpu,
         keep_temp=keeptemp,
         skip_align=skipalign,
+        colmap_track=colmaptrack,
         progress_callback=progress_callback,
         pause_controller=pause_controller,
     )

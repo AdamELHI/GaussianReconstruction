@@ -130,6 +130,7 @@ class ConstructionModel:
         use_gpu: bool = True,
         keep_temp: bool = True,
         skip_align: bool = False,
+        colmap_track: bool = False,
         progress_callback: Callable[[str], None] | None = None,
         pause_controller: Any | None = None,
     ) -> dict[str, Any]:
@@ -166,6 +167,7 @@ class ConstructionModel:
                 usegpu=use_gpu,
                 keeptemp=keep_temp,
                 skipalign=skip_align,
+                colmaptrack=colmap_track,
                 progress_callback=progress_callback,
                 pause_controller=pause_controller,
             )
