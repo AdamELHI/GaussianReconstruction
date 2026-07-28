@@ -1,10 +1,13 @@
 from view.menu import Menu
 from controller.app import AppController
 from PySide6.QtWidgets import QApplication
+from multiprocessing import freeze_support
+from model.paths import ensure_runtime_directories
 import sys
 
 
 def main():
+    ensure_runtime_directories()
     app = QApplication(sys.argv)
 
     view = Menu()
@@ -12,6 +15,8 @@ def main():
 
     view.show()
 
-    sys.exit(app.exec())
+    return app.exec()
 
-main()
+if __name__ == "__main__":
+    freeze_support()
+    sys.exit(main())

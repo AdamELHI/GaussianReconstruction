@@ -1,6 +1,9 @@
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
+from pathlib import Path
+
+from PySide6.QtCore import QObject, QStandardPaths, QThread, Qt, Signal, Slot
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 from model.construction_model import ConstructionModel, DEFAULT_OUTPUT_DIR
+from model.paths import DATASET_DIR
 import model.run_processing
 from view.settings import Settings
 
@@ -9,6 +12,7 @@ class ReconstructionWorker(QObject):
     progress = Signal(str)
     finished = Signal(dict)
     failed = Signal(str)
+    cancelled = Signal()
 
     def __init__(
         self,
@@ -35,6 +39,9 @@ class ReconstructionWorker(QObject):
                 pause_controller=self.pause_controller,
                 **self.parameters,
             )
+        except model.run_processing.ReconstructionCancelled:
+            self.cancelled.emit()
+            return
         except Exception as exc:
             self.failed.emit(str(exc))
             return
@@ -88,14 +95,24 @@ class AppController(QObject):
         self.view.select_output_button.clicked.connect(self.select_output_file)
         self.view.run_button.clicked.connect(self.run_reconstruction)
         self.view.pause_button.clicked.connect(self.toggle_reconstruction_pause)
+        self.view.cancel_button.clicked.connect(self.cancel_reconstruction)
         self.view.load_button.clicked.connect(self.load_reconstruction)
         self.view.close_button.clicked.connect(self.view.close)
 
     def select_input_file(self):
+        videos_directory = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.MoviesLocation
+        )
+        if videos_directory and Path(videos_directory).is_dir():
+            initial_directory = videos_directory
+        else:
+            DATASET_DIR.mkdir(parents=True, exist_ok=True)
+            initial_directory = str(DATASET_DIR)
+
         file_path, _ = QFileDialog.getOpenFileName(
             self.view,
             "Select a video",
-            "",
+            initial_directory,
             "Video Files (*.mp4 *.avi *.mov *.mkv *.webm)",
         )
         if not file_path:
@@ -193,12 +210,20 @@ class AppController(QObject):
             self.handle_reconstruction_failed,
             queued_connection,
         )
+        self.reconstruction_worker.cancelled.connect(
+            self.handle_reconstruction_cancelled,
+            queued_connection,
+        )
         self.reconstruction_worker.finished.connect(self.reconstruction_thread.quit)
         self.reconstruction_worker.failed.connect(self.reconstruction_thread.quit)
+        self.reconstruction_worker.cancelled.connect(self.reconstruction_thread.quit)
         self.reconstruction_worker.finished.connect(
             self.reconstruction_worker.deleteLater
         )
         self.reconstruction_worker.failed.connect(
+            self.reconstruction_worker.deleteLater
+        )
+        self.reconstruction_worker.cancelled.connect(
             self.reconstruction_worker.deleteLater
         )
         self.reconstruction_thread.finished.connect(
@@ -209,6 +234,27 @@ class AppController(QObject):
             queued_connection,
         )
         self.reconstruction_thread.start()
+
+    def cancel_reconstruction(self):
+        if not self.reconstruction_thread or not self.reconstruction_thread.isRunning():
+            return
+        if self.pause_controller is None:
+            return
+
+        answer = QMessageBox.question(
+            self.view,
+            "Cancel reconstruction",
+            "Do you really want to cancel the current reconstruction?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self.view.set_reconstruction_cancelling()
+        self.view.set_status("Cancelling the reconstruction...")
+        self.view.add_progress_message("Cancellation requested.")
+        self.pause_controller.cancel()
 
     def toggle_reconstruction_pause(self):
         if not self.reconstruction_thread or not self.reconstruction_thread.isRunning():
@@ -269,6 +315,12 @@ class AppController(QObject):
         )
         self.view.add_progress_message(f"Error details: {message}")
         QMessageBox.critical(self.view, "Error of reconstruction", message)
+
+    @Slot()
+    def handle_reconstruction_cancelled(self):
+        self.view.set_reconstruction_running(False)
+        self.view.set_status("Reconstruction cancelled.")
+        self.view.add_progress_message("The reconstruction was cancelled.")
 
     def clear_reconstruction_worker(self):
         self.reconstruction_thread = None

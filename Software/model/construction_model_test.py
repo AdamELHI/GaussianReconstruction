@@ -1,5 +1,5 @@
 import os
-from Software.model.construction_model import ConstructionModel
+from model.construction_model import ConstructionModel
 from pathlib import Path
 
 

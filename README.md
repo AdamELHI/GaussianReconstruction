@@ -21,3 +21,8 @@ If possible, avoid drastic changes in focus or framing while recording. For exam
 - **Use GPU** speeds up processing when a compatible GPU and the required drivers are available.
 - **Skip alignment** disables the final PCA alignment. Use this option only when PCA alignment distorts the reconstructed scene because of a geometric bias.
 - **Keep temporary files** preserves the intermediate COLMAP and Brush working files after reconstruction.
+
+## Building the application
+
+See [Software/build.md](Software/build.md) for the Windows and Linux standalone
+build instructions.
