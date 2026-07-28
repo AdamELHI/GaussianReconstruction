@@ -36,8 +36,8 @@ IS_LINUX = sys.platform.startswith("linux")
 BRUSH_TRAIN_ITERS_OPTION = (
     "--total-train-iters" if IS_LINUX else "--total-steps"
 )
-COLMAP_EXTRACTION_OPTIONS = "SiftExtraction" if IS_LINUX else "FeatureExtraction"
-COLMAP_MATCHING_OPTIONS = "SiftMatching" if IS_LINUX else "FeatureMatching"
+COLMAP_EXTRACTION_OPTIONS = "FeatureExtraction"
+COLMAP_MATCHING_OPTIONS = "FeatureMatching"
 
 
 def tool_path(name: str, required: bool = True) -> str | None:
