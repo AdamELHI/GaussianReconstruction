@@ -98,10 +98,6 @@ if ($LASTEXITCODE -ne 0) {
     throw "Could not install the Windows build dependencies."
 }
 
-$env:COLMAP_BUNDLE_DIR = $ColmapDir
-$env:BRUSH_BUNDLE_DIR = $BrushDir
-$env:FFMPEG_BUNDLE_DIR = $FfmpegDir
-
 Push-Location $ProjectDir
 try {
     & $Python -m PyInstaller --noconfirm --clean windows.spec
@@ -110,13 +106,11 @@ try {
     }
 } finally {
     Pop-Location
-    Remove-Item Env:COLMAP_BUNDLE_DIR -ErrorAction SilentlyContinue
-    Remove-Item Env:BRUSH_BUNDLE_DIR -ErrorAction SilentlyContinue
-    Remove-Item Env:FFMPEG_BUNDLE_DIR -ErrorAction SilentlyContinue
 }
 
 $OutputDir = Join-Path $ProjectDir "dist\GaussianReconstruction"
 $OutputExe = Join-Path $OutputDir "GaussianReconstruction.exe"
+$BundledToolsRoot = Join-Path $OutputDir "_internal\tools"
 $BundledColmap = Join-Path $OutputDir "_internal\tools\colmap"
 $BundledBrush = Join-Path $OutputDir "_internal\tools\brush"
 $BundledFfmpeg = Join-Path $OutputDir "_internal\tools\ffmpeg"
@@ -124,10 +118,71 @@ $BundledFfmpeg = Join-Path $OutputDir "_internal\tools\ffmpeg"
 if (-not (Test-Path $OutputExe -PathType Leaf)) {
     throw "The packaged application executable was not created at '$OutputExe'."
 }
+
+function Add-ToolBundle {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Source,
+        [Parameter(Mandatory)]
+        [string]$Destination
+    )
+
+    if (Test-Path $Destination) {
+        throw "The tool destination already exists after the PyInstaller build: '$Destination'."
+    }
+
+    $Source = (Resolve-Path $Source).Path.TrimEnd("\")
+    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+
+    Get-ChildItem -LiteralPath $Source -Directory -Recurse -Force |
+        Sort-Object { $_.FullName.Length } |
+        ForEach-Object {
+            $RelativePath = $_.FullName.Substring($Source.Length).TrimStart("\")
+            New-Item -ItemType Directory -Path (Join-Path $Destination $RelativePath) -Force |
+                Out-Null
+        }
+
+    Get-ChildItem -LiteralPath $Source -File -Recurse -Force |
+        ForEach-Object {
+            $RelativePath = $_.FullName.Substring($Source.Length).TrimStart("\")
+            $DestinationFile = Join-Path $Destination $RelativePath
+            try {
+                New-Item -ItemType HardLink -Path $DestinationFile -Target $_.FullName |
+                    Out-Null
+            } catch {
+                throw "Could not preserve Windows trust metadata for '$($_.FullName)'. Keep the tool directory on the same NTFS volume as the build output. $($_.Exception.Message)"
+            }
+        }
+}
+
+New-Item -ItemType Directory -Path $BundledToolsRoot -Force | Out-Null
+Write-Host "Adding external tools without PyInstaller processing."
+Add-ToolBundle -Source $ColmapDir -Destination $BundledColmap
+Add-ToolBundle -Source $BrushDir -Destination $BundledBrush
+Add-ToolBundle -Source $FfmpegDir -Destination $BundledFfmpeg
+
 foreach ($BundledTool in @($BundledColmap, $BundledBrush, $BundledFfmpeg)) {
     if (-not (Test-Path $BundledTool -PathType Container)) {
         throw "The packaged application is incomplete: '$BundledTool' is missing."
     }
+}
+
+$PackagedColmapExecutable = Get-ChildItem -Path $BundledColmap -Filter "colmap.exe" -File -Recurse |
+    Select-Object -First 1
+if (-not $PackagedColmapExecutable) {
+    throw "The packaged application is incomplete: colmap.exe is missing."
+}
+
+$PreviousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$PackagedColmapHelp = & $PackagedColmapExecutable.FullName -h 2>&1 | Out-String
+$PackagedColmapExitCode = $LASTEXITCODE
+$ErrorActionPreference = $PreviousErrorActionPreference
+if (
+    $PackagedColmapExitCode -ne 0 -or
+    $PackagedColmapHelp -notmatch "COLMAP"
+) {
+    throw "The packaged COLMAP executable failed its startup check with exit code $PackagedColmapExitCode. Check the Windows Code Integrity log for a blocked DLL."
 }
 
 Write-Host "Windows application folder created: $OutputDir"

@@ -81,6 +81,10 @@ powershell -ExecutionPolicy Bypass -File .\build_windows.ps1 `
   -FfmpegDir "C:\Tools\FFmpeg"
 ```
 
+The tool directories must be on the same NTFS volume as the build output.
+The script uses hard links when assembling the local package so Windows keeps
+the trust metadata required by Smart App Control.
+
 The script:
 
 1. validates that the folders contain COLMAP, Brush, FFmpeg, and FFprobe;
@@ -88,9 +92,10 @@ The script:
    `platforms\qwindows.dll`;
 3. creates `Software\.venv-windows` with Python 3.12;
 4. installs the Python build dependencies;
-5. bundles the complete COLMAP, Brush, and FFmpeg directories with the application;
-6. verifies that the packaged tool directories exist;
-7. creates the application folder.
+5. builds the Python application without processing the external tools;
+6. adds the complete COLMAP, Brush, and FFmpeg directories with NTFS hard links;
+7. verifies that the packaged COLMAP executable can start;
+8. creates the application folder.
 
 The final user does not need Python, PyInstaller, COLMAP, Brush, FFmpeg, Rust,
 or the Python packages. The executable is located at:
@@ -120,3 +125,8 @@ skipped.
 GPU drivers are never bundled. Distribute the licenses required by PyInstaller,
 COLMAP, Brush, and their dependencies, and test the executable on a clean
 Windows computer before distribution.
+
+Hard links solve local development builds but do not replace release signing:
+copying or archiving the folder creates new files on the destination computer.
+Sign release executables and DLLs with a certificate accepted by Windows before
+public distribution.

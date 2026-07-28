@@ -817,40 +817,8 @@ def align_ply(ply_path: Path, progress_callback=None, pause_controller=None) -> 
             tmp_path.unlink()
 
 
-def get_frames_sharpness(
-    video_capture,
-    start_frame,
-    end_frame,
-    progress_callback=None,
-    pause_controller=None,
-):
-    list_sharpness = []
 
-    current_pos = video_capture.get(cv.CAP_PROP_POS_FRAMES)
-    video_capture.set(cv.CAP_PROP_POS_FRAMES, start_frame)
 
-    frame_count = max(0, end_frame - start_frame)
-    progress_interval = max(1, frame_count // 100)
-
-    for frame_number in range(start_frame, end_frame):
-        if pause_controller:
-            pause_controller.wait_if_paused()
-        success, frame = video_capture.read()
-        if not success:
-            break
-
-        gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
-        list_sharpness.append(cv.Laplacian(gray, cv.CV_64F).var())
-
-        processed_count = frame_number - start_frame + 1
-        if processed_count % progress_interval == 0 or processed_count == frame_count:
-            message = f"Analysing sharpness: {processed_count}/{frame_count} frames"
-            print(message)
-            emit_progress(progress_callback, message)
-
-    video_capture.set(cv.CAP_PROP_POS_FRAMES, current_pos)
-
-    return np.asarray(list_sharpness, dtype=np.float64)
 
 def main(
     input_file,
@@ -970,33 +938,26 @@ def main(
                 int((h * 3600 + m * 60 + sec) * fps),
             )
 
-        l_sharpness = get_frames_sharpness(
-            video_capture,
-            nb_frame,
-            end_frame,
-            progress_callback=progress_callback,
-            pause_controller=pause_controller,
-        )
-        if l_sharpness.size == 0:
-            video_capture.release()
-            raise RuntimeError("No readable frames were found in the selected video range.")
 
-        end_frame = nb_frame + int(l_sharpness.size)
-        score_mean = float(l_sharpness.mean())
-        print("score_mean =", score_mean)
+        end_frame = nb_frame + video_capture.get(cv.CAP_PROP_FRAME_COUNT) - 1
         video_capture.set(cv.CAP_PROP_POS_FRAMES, nb_frame)
+        score_mean = 0
+        sharpness_tot = 0
 
-
-        sharpness_index = 0
+        frame_count = max(0, int(end_frame - nb_frame))
+        progress_interval = max(1, frame_count // 100)
+        processed_count = 0
         while nb_frame < end_frame :
             if pause_controller:
                 pause_controller.wait_if_paused()
             success, image = video_capture.read()
             if not success:
                 break
+            processed_count += 1
 
             if nb_frame >= next_snapshot:
-                sharpness = float(l_sharpness[sharpness_index])
+                gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
+                sharpness = cv.Laplacian(gray, cv.CV_32F).var() 
                 print(f"Frame {nb_frame}: sharpness={sharpness}")
 
                 image_path = images_dir / f"frame_{nb_saved:05d}.jpg"
@@ -1004,13 +965,12 @@ def main(
                     video_capture.release()
                     raise RuntimeError(f"Could not write extracted frame: {image_path}")
                 nb_saved += 1
+                sharpness_tot += sharpness
+                score_mean = sharpness_tot / nb_saved
+                interval = int(
+                    (fps / frame_rate) * (sharpness / score_mean)
+                )
 
-                if np.isfinite(score_mean) and score_mean > 0:
-                    interval = int(
-                        (fps / frame_rate) * (sharpness / score_mean)
-                    )
-                else:
-                    interval = int(fps / frame_rate)
 
                 interval = min(
                     interval,
@@ -1023,6 +983,16 @@ def main(
 
             nb_frame += 1
             sharpness_index += 1
+            if (
+                processed_count % progress_interval == 0
+                or processed_count == frame_count
+            ):
+                message = (
+                    f"Extracting frames: {processed_count}/{frame_count} "
+                    "video frames processed."
+                )
+                print(message)
+                emit_progress(progress_callback, message)
 
         video_capture.release()
         video_duration_seconds = sharpness_index / fps
