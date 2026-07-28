@@ -922,14 +922,9 @@ def main(
 
         end_frame = int(video_capture.get(cv.CAP_PROP_FRAME_COUNT))
 
-        snapshot_every = 1
-
         if start_time:
             h, m, sec = map(int, start_time.split(":"))
-            start_frame = int((h * 3600 + m * 60 + sec) * fps)
-            nb_frame = start_frame
-
-        next_snapshot = nb_frame
+            nb_frame = int((h * 3600 + m * 60 + sec) * fps)
 
         if end_time:
             h, m, sec = map(int, end_time.split(":"))
@@ -938,16 +933,20 @@ def main(
                 int((h * 3600 + m * 60 + sec) * fps),
             )
 
+        if nb_frame >= end_frame:
+            video_capture.release()
+            raise RuntimeError("The selected video range does not contain any frames.")
 
-        end_frame = nb_frame + video_capture.get(cv.CAP_PROP_FRAME_COUNT) - 1
+        base_interval = max(1.0, fps / frame_rate)
+        snapshot_every = max(1, round(base_interval))
+        next_snapshot = nb_frame
         video_capture.set(cv.CAP_PROP_POS_FRAMES, nb_frame)
-        score_mean = 0
-        sharpness_tot = 0
+        score_mean = None
 
-        frame_count = max(0, int(end_frame - nb_frame))
+        frame_count = end_frame - nb_frame
         progress_interval = max(1, frame_count // 100)
         processed_count = 0
-        while nb_frame < end_frame :
+        while nb_frame < end_frame:
             if pause_controller:
                 pause_controller.wait_if_paused()
             success, image = video_capture.read()
@@ -957,32 +956,38 @@ def main(
 
             if nb_frame >= next_snapshot:
                 gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
-                sharpness = cv.Laplacian(gray, cv.CV_32F).var() 
-                print(f"Frame {nb_frame}: sharpness={sharpness}")
+                laplacian = cv.Laplacian(gray, cv.CV_16S)
+                _, laplacian_stddev = cv.meanStdDev(laplacian)
+                sharpness = float(laplacian_stddev[0, 0] ** 2)
 
                 image_path = images_dir / f"frame_{nb_saved:05d}.jpg"
                 if not cv.imwrite(str(image_path), image):
                     video_capture.release()
                     raise RuntimeError(f"Could not write extracted frame: {image_path}")
                 nb_saved += 1
-                sharpness_tot += sharpness
-                score_mean = sharpness_tot / nb_saved
-                interval = int(
-                    (fps / frame_rate) * (sharpness / score_mean)
+                if score_mean is None:
+                    score_mean = sharpness
+                    target_interval = snapshot_every
+                else:
+                    sharpness_ratio = sharpness / max(score_mean, 1e-6)
+                    sharpness_ratio = min(1.5, max(0.5, sharpness_ratio))
+                    target_interval = max(
+                        1,
+                        round(base_interval * sharpness_ratio),
+                    )
+                    score_mean += 0.15 * (sharpness - score_mean)
+
+                snapshot_every = max(
+                    1,
+                    round((snapshot_every + target_interval) / 2),
                 )
-
-
-                interval = min(
-                    interval,
-                    int(1.5 * fps / frame_rate),
+                print(
+                    f"Frame {nb_frame}: sharpness={sharpness:.2f}, "
+                    f"reference={score_mean:.2f}, interval={snapshot_every}"
                 )
-
-                snapshot_every = max(1, interval)
-                print("interval =", interval)
                 next_snapshot = nb_frame + snapshot_every
 
             nb_frame += 1
-            sharpness_index += 1
             if (
                 processed_count % progress_interval == 0
                 or processed_count == frame_count
@@ -995,7 +1000,7 @@ def main(
                 emit_progress(progress_callback, message)
 
         video_capture.release()
-        video_duration_seconds = sharpness_index / fps
+        video_duration_seconds = processed_count / fps
         print(f"{nb_saved} images extracted")
 
 
