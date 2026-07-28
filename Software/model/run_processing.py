@@ -186,12 +186,17 @@ class PauseManager:
     def __init__(self):
         self._resume_event = threading.Event()
         self._resume_event.set()
+        self._cancel_event = threading.Event()
         self._lock = threading.Lock()
         self._process = None
 
     @property
     def is_paused(self) -> bool:
         return not self._resume_event.is_set()
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self._cancel_event.is_set()
 
     def pause(self) -> None:
         with self._lock:
@@ -209,13 +214,32 @@ class PauseManager:
                 self._set_windows_process_suspended(False)
             self._resume_event.set()
 
+    def cancel(self) -> None:
+        with self._lock:
+            if self._cancel_event.is_set():
+                return
+            self._cancel_event.set()
+            self._resume_event.set()
+            if os.name == "posix":
+                self._signal_process(signal.SIGCONT)
+                self._signal_process(signal.SIGTERM)
+            elif os.name == "nt":
+                self._terminate_windows_process_tree()
+
     def wait_if_paused(self) -> None:
         self._resume_event.wait()
+        if self.is_cancelled:
+            raise ReconstructionCancelled()
 
     def attach_process(self, process) -> None:
         with self._lock:
             self._process = process
-            if self.is_paused and os.name == "posix":
+            if self.is_cancelled:
+                if os.name == "posix":
+                    self._signal_process(signal.SIGTERM)
+                elif os.name == "nt":
+                    self._terminate_windows_process_tree()
+            elif self.is_paused and os.name == "posix":
                 self._signal_process(signal.SIGSTOP)
             elif self.is_paused and os.name == "nt":
                 self._set_windows_process_suspended(True)
@@ -256,6 +280,22 @@ class PauseManager:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
 
+    def _terminate_windows_process_tree(self) -> None:
+        process = self._process
+        if os.name != "nt" or process is None or process.poll() is not None:
+            return
+
+        try:
+            root_process = psutil.Process(process.pid)
+            processes = root_process.children(recursive=True) + [root_process]
+            for child_process in processes:
+                try:
+                    child_process.terminate()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
 
 def emit_progress(progress_callback, message: str) -> None:
     if progress_callback:
@@ -264,6 +304,11 @@ def emit_progress(progress_callback, message: str) -> None:
 
 class ExternalToolError(RuntimeError):
     pass
+
+
+class ReconstructionCancelled(RuntimeError):
+    def __init__(self):
+        super().__init__("The reconstruction was cancelled.")
 
 
 def process_environment(
@@ -405,6 +450,8 @@ def run_step(
             heartbeat_thread.join(timeout=1)
         if pause_controller:
             pause_controller.detach_process(process)
+    if pause_controller and pause_controller.is_cancelled:
+        raise ReconstructionCancelled()
     if return_code != 0:
         output_tail = "\n".join(recent_output).strip()
         message = f"{label} failed with exit code {return_code}."

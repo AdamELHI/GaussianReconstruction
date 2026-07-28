@@ -169,6 +169,8 @@ class ConstructionModel:
                 progress_callback=progress_callback,
                 pause_controller=pause_controller,
             )
+        except model.run_processing.ReconstructionCancelled:
+            raise
         except (FileNotFoundError, ModuleNotFoundError, ImportError) as exc:
             if progress_callback:
                 progress_callback(
