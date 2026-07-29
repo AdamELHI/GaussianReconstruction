@@ -1,7 +1,8 @@
 param(
     [string]$ColmapDir = "",
     [string]$BrushDir = "",
-    [string]$FfmpegDir = ""
+    [string]$FfmpegDir = "",
+    [string]$SplatTransformVersion = "3.1.7"
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,10 +28,17 @@ if (-not (Test-Path $BrushDir -PathType Container)) {
 if (-not (Test-Path $FfmpegDir -PathType Container)) {
     throw "FFmpeg directory not found at '$FfmpegDir'. Download a Windows FFmpeg build containing ffmpeg.exe and ffprobe.exe, or pass -FfmpegDir."
 }
+if (-not $SplatTransformVersion) {
+    throw "SplatTransformVersion must not be empty."
+}
 
 $ColmapDir = (Resolve-Path $ColmapDir).Path
 $BrushDir = (Resolve-Path $BrushDir).Path
 $FfmpegDir = (Resolve-Path $FfmpegDir).Path
+$NodeExecutable = Get-Command "node.exe" -CommandType Application -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+$NpmExecutable = Get-Command "npm.cmd" -CommandType Application -ErrorAction SilentlyContinue |
+    Select-Object -First 1
 $ColmapExecutable = Get-ChildItem -Path $ColmapDir -Filter "colmap.exe" -File -Recurse | Select-Object -First 1
 $BrushExecutable = Get-ChildItem -Path $BrushDir -Include "brush.exe", "brush-app.exe", "brush_app.exe" -File -Recurse | Select-Object -First 1
 $FfmpegExecutable = Get-ChildItem -Path $FfmpegDir -Filter "ffmpeg.exe" -File -Recurse | Select-Object -First 1
@@ -48,6 +56,9 @@ if (-not $BrushExecutable) {
 }
 if (-not $FfmpegExecutable -or -not $FfprobeExecutable) {
     throw "ffmpeg.exe and ffprobe.exe must both exist below '$FfmpegDir'."
+}
+if (-not $NodeExecutable -or -not $NpmExecutable) {
+    throw "Node.js and npm are required to bundle splat-transform. Install a 64-bit Node.js release and ensure node.exe and npm.cmd are in PATH."
 }
 if ($ColmapQtCore -and -not $ColmapQtPlatformPlugin) {
     throw "The selected COLMAP build uses Qt, but platforms\qwindows.dll is missing. Keep the complete official COLMAP archive or use a headless COLMAP build."
@@ -114,6 +125,7 @@ $BundledToolsRoot = Join-Path $OutputDir "_internal\tools"
 $BundledColmap = Join-Path $OutputDir "_internal\tools\colmap"
 $BundledBrush = Join-Path $OutputDir "_internal\tools\brush"
 $BundledFfmpeg = Join-Path $OutputDir "_internal\tools\ffmpeg"
+$BundledSplatTransform = Join-Path $OutputDir "_internal\tools\splat-transform"
 
 if (-not (Test-Path $OutputExe -PathType Leaf)) {
     throw "The packaged application executable was not created at '$OutputExe'."
@@ -161,7 +173,31 @@ Add-ToolBundle -Source $ColmapDir -Destination $BundledColmap
 Add-ToolBundle -Source $BrushDir -Destination $BundledBrush
 Add-ToolBundle -Source $FfmpegDir -Destination $BundledFfmpeg
 
-foreach ($BundledTool in @($BundledColmap, $BundledBrush, $BundledFfmpeg)) {
+Write-Host "Installing splat-transform $SplatTransformVersion into the application folder."
+New-Item -ItemType Directory -Path $BundledSplatTransform -Force | Out-Null
+& $NpmExecutable.Source install `
+    --prefix $BundledSplatTransform `
+    --omit=dev `
+    --no-audit `
+    --no-fund `
+    "@playcanvas/splat-transform@$SplatTransformVersion"
+if ($LASTEXITCODE -ne 0) {
+    throw "npm failed to install @playcanvas/splat-transform@$SplatTransformVersion."
+}
+
+$BundledSplatTransformBin = Join-Path $BundledSplatTransform "node_modules\.bin"
+$PackagedSplatTransform = Join-Path $BundledSplatTransformBin "splat-transform.cmd"
+$BundledNodeExecutable = Join-Path $BundledSplatTransformBin "node.exe"
+if (-not (Test-Path $PackagedSplatTransform -PathType Leaf)) {
+    throw "The packaged application is incomplete: splat-transform.cmd is missing."
+}
+try {
+    Copy-Item -LiteralPath $NodeExecutable.Source -Destination $BundledNodeExecutable
+} catch {
+    throw "Could not bundle node.exe for splat-transform. $($_.Exception.Message)"
+}
+
+foreach ($BundledTool in @($BundledColmap, $BundledBrush, $BundledFfmpeg, $BundledSplatTransform)) {
     if (-not (Test-Path $BundledTool -PathType Container)) {
         throw "The packaged application is incomplete: '$BundledTool' is missing."
     }
@@ -185,6 +221,18 @@ if (
     throw "The packaged COLMAP executable failed its startup check with exit code $PackagedColmapExitCode. Check the Windows Code Integrity log for a blocked DLL."
 }
 
+$SplatTransformVersionCommand = "`"$PackagedSplatTransform`" --version 2>&1"
+$PackagedSplatTransformVersion = & $env:ComSpec /d /c $SplatTransformVersionCommand |
+    Out-String
+$PackagedSplatTransformExitCode = $LASTEXITCODE
+if (
+    $PackagedSplatTransformExitCode -ne 0 -or
+    -not $PackagedSplatTransformVersion.Trim()
+) {
+    throw "The packaged splat-transform command failed its startup check with exit code $PackagedSplatTransformExitCode."
+}
+
 Write-Host "Windows application folder created: $OutputDir"
 Write-Host "Executable: $OutputExe"
+Write-Host "Bundled splat-transform: $($PackagedSplatTransformVersion.Trim())"
 Write-Host "Distribute the complete GaussianReconstruction folder, not the executable alone."

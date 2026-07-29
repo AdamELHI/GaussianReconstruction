@@ -70,8 +70,10 @@ progressive copy when an interlaced video is selected.
 
 ### Build
 
-Install 64-bit Python 3.12 on the build computer. From PowerShell, enter the
-`Software` directory and run:
+Install 64-bit Python 3.12 and 64-bit Node.js on the build computer. Node.js is
+used only while assembling the package; its runtime and `splat-transform` are
+copied into the standalone application. From PowerShell, enter the `Software`
+directory and run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build_windows.ps1
@@ -95,15 +97,18 @@ The script:
 1. validates that the folders contain COLMAP, Brush, FFmpeg, and FFprobe;
 2. verifies that a Qt-enabled COLMAP bundle also contains
    `platforms\qwindows.dll`;
-3. creates `Software\.venv-windows` with Python 3.12;
-4. installs the Python build dependencies;
-5. builds the Python application without processing the external tools;
-6. adds the complete COLMAP, Brush, and FFmpeg directories with NTFS hard links;
-7. verifies that the packaged COLMAP executable can start;
-8. creates the application folder.
+3. verifies that Node.js and npm are available on the build computer;
+4. creates `Software\.venv-windows` with Python 3.12;
+5. installs the Python build dependencies;
+6. builds the Python application without processing the external tools;
+7. adds the complete COLMAP, Brush, and FFmpeg directories with NTFS hard links;
+8. installs the pinned `splat-transform` package and bundles `node.exe`;
+9. verifies that the packaged COLMAP and `splat-transform` commands can start;
+10. creates the application folder.
 
-The final user does not need Python, PyInstaller, COLMAP, Brush, FFmpeg, Rust,
-or the Python packages. The executable is located at:
+The final user does not need Python, Node.js, npm, PyInstaller, COLMAP, Brush,
+FFmpeg, Rust, `splat-transform`, or the Python/npm packages. The executable is
+located at:
 
 ```text
 Software\dist\GaussianReconstruction\GaussianReconstruction.exe
@@ -121,15 +126,17 @@ video picker. `LastReconstruction` replaces the former `tmp` directory and
 contains the most recent COLMAP/Brush working data when `Keep temporary
 directory` is enabled. Their contents are not tracked by Git.
 
-### Not bundled
+The `SplatTransformVersion` build parameter pins the npm package used in the
+standalone application. For example:
 
-`splat-transform` remains optional and is not bundled. Reconstruction still
-works without it, but optional transparent-point cleanup and PCA alignment are
-skipped.
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build_windows.ps1 `
+  -SplatTransformVersion "3.1.7"
+```
 
 GPU drivers are never bundled. Distribute the licenses required by PyInstaller,
-COLMAP, Brush, and their dependencies, and test the executable on a clean
-Windows computer before distribution.
+COLMAP, Brush, FFmpeg, Node.js, `splat-transform`, and their dependencies, and
+test the executable on a clean Windows computer before distribution.
 
 Hard links solve local development builds but do not replace release signing:
 copying or archiving the folder creates new files on the destination computer.
@@ -289,7 +296,7 @@ Rust, Cargo, or the Python packages used during the build.
 
 ### Not bundled
 
-As on Windows, `splat-transform` and GPU drivers are not bundled. Distribute
-the licenses required by PyInstaller, COLMAP, Brush, FFmpeg, and their
-dependencies, and test the package on a clean Linux computer representative of
-the oldest supported distribution.
+On Linux, `splat-transform` and GPU drivers are not bundled. Distribute the
+licenses required by PyInstaller, COLMAP, Brush, FFmpeg, and their dependencies,
+and test the package on a clean Linux computer representative of the oldest
+supported distribution.

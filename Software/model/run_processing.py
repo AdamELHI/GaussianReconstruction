@@ -61,7 +61,9 @@ def tool_path(name: str, required: bool = True) -> str | None:
             "brush": [BUNDLED_TOOLS_DIR / "brush/brush_app.exe", PROJECT_ROOT / "Brush/brush_app.exe"],
             "ffmpeg": list((BUNDLED_TOOLS_DIR / "ffmpeg").glob("*/bin/ffmpeg.exe")),
             "ffprobe": list((BUNDLED_TOOLS_DIR / "ffmpeg").glob("*/bin/ffprobe.exe")),
-            "splat-transform": [],
+            "splat-transform": [
+                BUNDLED_TOOLS_DIR / "splat-transform/node_modules/.bin/splat-transform.cmd",
+            ],
         }[name]
         system_names = (f"{name}.exe", f"{name}.cmd", name)
     else:
