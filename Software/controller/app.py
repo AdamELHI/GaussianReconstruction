@@ -90,7 +90,6 @@ class AppController(QObject):
 
     def connect_signals(self):
         self.view.settings_button.clicked.connect(self.open_settings)
-        self.view.load_reconstruct_button.clicked.connect(self.load_reconstruction)
         self.view.select_video_button.clicked.connect(self.select_input_file)
         self.view.select_output_button.clicked.connect(self.select_output_file)
         self.view.run_button.clicked.connect(self.run_reconstruction)
