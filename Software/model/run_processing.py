@@ -799,11 +799,15 @@ def colmap_database_match_count(database_path: Path) -> int:
             row = database.execute(
                 "SELECT COUNT(*) FROM two_view_geometries WHERE rows > 0"
             ).fetchone()
+            return int(row[0]) if row else 0
     except sqlite3.Error as exc:
         raise ExternalToolError(
             f"COLMAP matching results could not be verified: {exc}"
         ) from exc
-    return int(row[0]) if row else 0
+
+    finally : 
+        database.close()
+
 
 
 def align_ply(ply_path: Path, progress_callback=None, pause_controller=None) -> None:
@@ -811,7 +815,7 @@ def align_ply(ply_path: Path, progress_callback=None, pause_controller=None) -> 
     if pause_controller:
         pause_controller.wait_if_paused()
 
-    vertex = PlyData.read(str(ply_path))["vertex"]
+    vertex = PlyData.read(str(ply_path), mmap=False)["vertex"]
     points = np.column_stack(
         tuple(
             np.asarray(vertex[axis], dtype=np.float64)
