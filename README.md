@@ -2,9 +2,11 @@
 
 ## Overview
 
-This tool creates a 3D reconstruction from an MP4 video.
+This tool creates a 3D reconstruction from one or more video files. Supported
+input formats include MP4, AVI, MOV, MKV, and WebM.
 
-The reconstruction is not generative: it cannot create viewpoints that are not visible in any of the frames extracted from the video.
+The reconstruction is not generative: it cannot create viewpoints that are not
+visible in any of the frames extracted from the selected videos.
 
 The tool also requires sufficient parallax to produce good results:
 
@@ -14,13 +16,41 @@ The tool also requires sufficient parallax to produce good results:
 
 If possible, avoid drastic changes in focus or framing while recording. For example, switching between a close-up and a wide shot can make reconstruction more difficult.
 
+## Video selection and matching
+
+The video selection dialog accepts one or more files. Every selected path is
+displayed under the **Video** label in the main menu.
+
+All selected videos are processed as one reconstruction:
+
+1. Frames are extracted from each video into the same image dataset. Their file
+   names include a video number to prevent collisions.
+2. COLMAP feature extraction runs once on the complete dataset.
+3. Matching and mapping also run once on all extracted frames.
+
+The matching strategy is selected automatically:
+
+- With one video, COLMAP uses sequential matching by default. This is faster and
+  compares frames that are close to each other in the video.
+- With multiple videos, COLMAP uses exhaustive matching so that frames from
+  different videos can be connected.
+- **Force exhaustive matching** can be enabled in the settings to use exhaustive
+  matching with a single video.
+
+Exhaustive matching is slower because it compares every image pair. To reduce
+false connections between videos, it also uses stricter geometric verification:
+at least 50 geometrically consistent matches, a minimum inlier ratio of 30%, and
+a maximum geometric error of 2 pixels.
+
 ## Settings
 
 - **Frame rate** controls the number of frames extracted per second. Increase it when the camera moves quickly so that the reconstruction captures enough intermediate viewpoints.
-- **Start time / End time** define the portion of the video to process. Use the `HH:MM:SS` format; for example, `00:00:15` starts at 15 seconds and `00:15:00` starts at 15 minutes.
+- **Start time / End time** define the portion of each selected video to process. Use the `HH:MM:SS` format; for example, `00:00:15` starts at 15 seconds and `00:15:00` starts at 15 minutes.
 - **Use GPU** speeds up processing when a compatible GPU and the required drivers are available.
+- **Force exhaustive matching** compares every extracted image pair, even when only one video is selected. It can improve connections between non-consecutive viewpoints but increases processing time.
 - **Skip alignment** disables the final PCA alignment. Use this option only when PCA alignment distorts the reconstructed scene because of a geometric bias.
 - **Keep temporary files** preserves the intermediate COLMAP and Brush working files after reconstruction.
+- **Open the COLMAP model in its GUI** opens the sparse camera reconstruction for inspection before Brush training.
 
 ## Building the application
 

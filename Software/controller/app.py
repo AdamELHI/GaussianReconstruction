@@ -17,14 +17,14 @@ class ReconstructionWorker(QObject):
     def __init__(
         self,
         model,
-        input_path,
+        input_paths,
         output_path,
         parameters,
         pause_controller,
     ):
         super().__init__()
         self.model = model
-        self.input_path = input_path
+        self.input_paths = input_paths
         self.output_path = output_path
         self.parameters = parameters
         self.pause_controller = pause_controller
@@ -33,7 +33,7 @@ class ReconstructionWorker(QObject):
     def run(self):
         try:
             result = self.model.run_reconstruction(
-                self.input_path,
+                self.input_paths,
                 self.output_path,
                 progress_callback=self.progress.emit,
                 pause_controller=self.pause_controller,
@@ -108,20 +108,23 @@ class AppController(QObject):
             DATASET_DIR.mkdir(parents=True, exist_ok=True)
             initial_directory = str(DATASET_DIR)
 
-        file_path, _ = QFileDialog.getOpenFileName(
+        file_paths, _ = QFileDialog.getOpenFileNames(
             self.view,
-            "Select a video",
+            "Select one or more videos",
             initial_directory,
             "Video Files (*.mp4 *.avi *.mov *.mkv *.webm)",
         )
-        if not file_path:
+        if not file_paths:
             return
 
-        self.view.set_input_path(file_path)
+        self.view.set_input_paths(file_paths)
         if not self.output_selected_manually:
-            default_output = self.model.resolve_output_path(file_path, None)
+            default_output = self.model.resolve_output_path(file_paths, None)
             self.view.set_output_path(str(default_output))
-        self.view.set_status(f"Video selected: {file_path}")
+        if len(file_paths) == 1:
+            self.view.set_status(f"Video selected: {file_paths[0]}")
+        else:
+            self.view.set_status(f"{len(file_paths)} video files selected.")
 
     def select_output_file(self):
         suggested_output = self.view.get_output_path() or str(DEFAULT_OUTPUT_DIR)
@@ -154,9 +157,9 @@ class AppController(QObject):
             )
             return
 
-        input_path = self.view.get_input_path()
+        input_paths = self.view.get_input_paths()
         output_path = self.view.get_output_path()
-        if not input_path:
+        if not input_paths:
             QMessageBox.warning(
                 self.view,
                 "Missing video",
@@ -166,7 +169,7 @@ class AppController(QObject):
 
         try:
             self.model.validate_reconstruction_parameters(
-                input_path,
+                input_paths,
                 self.reconstruction_parameters,
             )
         except ValueError as exc:
@@ -181,14 +184,14 @@ class AppController(QObject):
         self.view.set_reconstruction_running(True)
         self.view.set_status("Reconstruction en cours...")
         self.view.add_progress_message(
-            "Lauching the reconstruction from the selected video."
+            "Launching the reconstruction from the selected video input."
         )
 
         self.reconstruction_thread = QThread()
         self.pause_controller = model.run_processing.PauseManager()
         self.reconstruction_worker = ReconstructionWorker(
             self.model,
-            input_path,
+            input_paths,
             output_path,
             self.reconstruction_parameters.copy(),
             self.pause_controller,
@@ -419,7 +422,7 @@ class AppController(QObject):
             parameters = dialog.get_parameters()
             try:
                 self.model.validate_reconstruction_parameters(
-                    self.view.get_input_path() or None,
+                    self.view.get_input_paths() or None,
                     parameters,
                 )
             except ValueError as exc:

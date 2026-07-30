@@ -21,6 +21,7 @@ class Settings(QDialog):
         "keep_temp": False,
         "skip_align": False,
         "colmap_track": False,
+        "force_exhaustive_matcher": False,
     }
 
     def __init__(self, parameters=None, parent=None):
@@ -81,10 +82,21 @@ class Settings(QDialog):
         self.load_colmap_checkbox = QCheckBox("Open the COLMAP model in its GUI")
         self.load_colmap_checkbox.setChecked(bool(self.parameters["colmap_track"]))
 
+        self.force_exhaustive_matcher_checkbox = QCheckBox(
+            "Force exhaustive matching"
+        )
+        self.force_exhaustive_matcher_checkbox.setToolTip(
+            "Compare every image pair, even when only one video is selected."
+        )
+        self.force_exhaustive_matcher_checkbox.setChecked(
+            bool(self.parameters["force_exhaustive_matcher"])
+        )
+
         options_layout.addWidget(self.use_gpu_checkbox)
         options_layout.addWidget(self.keep_temp_checkbox)
         options_layout.addWidget(self.skip_align_checkbox)
         options_layout.addWidget(self.load_colmap_checkbox)
+        options_layout.addWidget(self.force_exhaustive_matcher_checkbox)
 
         self.button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -116,4 +128,7 @@ class Settings(QDialog):
             "keep_temp": self.keep_temp_checkbox.isChecked(),
             "skip_align": self.skip_align_checkbox.isChecked(),
             "colmap_track": self.load_colmap_checkbox.isChecked(),
+            "force_exhaustive_matcher": (
+                self.force_exhaustive_matcher_checkbox.isChecked()
+            ),
         }

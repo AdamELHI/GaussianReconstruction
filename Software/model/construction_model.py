@@ -14,10 +14,19 @@ class ConstructionModel:
         DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         self.last_result: dict[str, Any] | None = None
 
-    def resolve_output_path(self, input_path: str, output_path: str | None) -> Path:
+    @staticmethod
+    def normalize_input_paths(input_paths) -> list[Path]:
+        if isinstance(input_paths, (str, Path)):
+            input_paths = [input_paths]
+        return [Path(path).expanduser() for path in (input_paths or [])]
+
+    def resolve_output_path(self, input_path, output_path: str | None) -> Path:
         if output_path:
             return Path(output_path).expanduser()
-        source = Path(input_path).expanduser()
+        sources = self.normalize_input_paths(input_path)
+        if not sources:
+            return DEFAULT_OUTPUT_DIR / "reconstruction.ply"
+        source = sources[0]
         return DEFAULT_OUTPUT_DIR / f"{source.stem}.ply"
 
     def write_placeholder_ply(self, output_path: Path, reason: str) -> None:
@@ -58,7 +67,7 @@ class ConstructionModel:
 
     def validate_reconstruction_parameters(
         self,
-        input_path: str | None,
+        input_path,
         parameters: dict[str, Any],
     ) -> None:
         frame_rate = float(parameters["fps"])
@@ -80,48 +89,51 @@ class ConstructionModel:
         if end_seconds is not None and end_seconds <= (start_seconds or 0):
             raise ValueError("End time must be later than start time.")
 
-        if not input_path or (start_seconds is None and end_seconds is None):
+        input_paths = self.normalize_input_paths(input_path)
+        if not input_paths or (start_seconds is None and end_seconds is None):
             return
 
         import cv2 as cv
 
-        video_capture = cv.VideoCapture(str(Path(input_path).expanduser()))
-        try:
-            if not video_capture.isOpened():
-                raise ValueError(
-                    "The selected video could not be opened to check its duration."
-                )
+        for source in input_paths:
+            video_capture = cv.VideoCapture(str(source))
+            try:
+                if not video_capture.isOpened():
+                    raise ValueError(
+                        f"The selected video could not be opened: {source}"
+                    )
 
-            video_fps = video_capture.get(cv.CAP_PROP_FPS)
-            frame_count = video_capture.get(cv.CAP_PROP_FRAME_COUNT)
-            if (
-                not math.isfinite(video_fps)
-                or video_fps <= 0
-                or not math.isfinite(frame_count)
-                or frame_count <= 0
-            ):
-                raise ValueError(
-                    "The duration of the selected video could not be determined."
-                )
-            duration_seconds = frame_count / video_fps
-        finally:
-            video_capture.release()
+                video_fps = video_capture.get(cv.CAP_PROP_FPS)
+                frame_count = video_capture.get(cv.CAP_PROP_FRAME_COUNT)
+                if (
+                    not math.isfinite(video_fps)
+                    or video_fps <= 0
+                    or not math.isfinite(frame_count)
+                    or frame_count <= 0
+                ):
+                    raise ValueError(
+                        "The duration of the selected video could not be "
+                        f"determined: {source}"
+                    )
+                duration_seconds = frame_count / video_fps
+            finally:
+                video_capture.release()
 
-        formatted_duration = self.format_video_time(duration_seconds)
-        if start_seconds is not None and start_seconds >= duration_seconds:
-            raise ValueError(
-                f"Start time must be earlier than the video duration "
-                f"({formatted_duration})."
-            )
-        if end_seconds is not None and end_seconds > duration_seconds:
-            raise ValueError(
-                f"End time must not exceed the video duration "
-                f"({formatted_duration})."
-            )
+            formatted_duration = self.format_video_time(duration_seconds)
+            if start_seconds is not None and start_seconds >= duration_seconds:
+                raise ValueError(
+                    f"Start time must be earlier than the duration of "
+                    f"{source.name} ({formatted_duration})."
+                )
+            if end_seconds is not None and end_seconds > duration_seconds:
+                raise ValueError(
+                    f"End time must not exceed the duration of "
+                    f"{source.name} ({formatted_duration})."
+                )
 
     def run_reconstruction(
         self,
-        input_path: str,
+        input_path,
         output_path: str | None = None,
         fps: float = 1.0,
         start_time: str | None = None,
@@ -131,15 +143,19 @@ class ConstructionModel:
         keep_temp: bool = True,
         skip_align: bool = False,
         colmap_track: bool = False,
+        force_exhaustive_matcher: bool = False,
         progress_callback: Callable[[str], None] | None = None,
         pause_controller: Any | None = None,
     ) -> dict[str, Any]:
-        source = Path(input_path).expanduser()
-        if not source.is_file():
-            raise FileNotFoundError(f"Video file not found: {source}")
+        sources = self.normalize_input_paths(input_path)
+        if not sources:
+            raise FileNotFoundError("No video file was selected.")
+        for source in sources:
+            if not source.is_file():
+                raise FileNotFoundError(f"Video file not found: {source}")
 
         self.validate_reconstruction_parameters(
-            str(source),
+            [str(source) for source in sources],
             {
                 "fps": fps,
                 "start_time": start_time,
@@ -148,7 +164,7 @@ class ConstructionModel:
             },
         )
 
-        destination = self.resolve_output_path(str(source), output_path)
+        destination = self.resolve_output_path(sources, output_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
 
         if progress_callback:
@@ -158,7 +174,7 @@ class ConstructionModel:
             import model.run_processing
 
             exit_code = model.run_processing.run(
-                str(source),
+                [str(source) for source in sources],
                 str(destination),
                 fps=fps,
                 starttime=start_time,
@@ -168,6 +184,7 @@ class ConstructionModel:
                 keeptemp=keep_temp,
                 skipalign=skip_align,
                 colmaptrack=colmap_track,
+                forceexhaustivematcher=force_exhaustive_matcher,
                 progress_callback=progress_callback,
                 pause_controller=pause_controller,
             )

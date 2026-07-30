@@ -1,7 +1,53 @@
 from model.run_processing import (
+    colmap_matcher_name,
     colmap_registered_image_count,
+    exhaustive_geometry_args,
+    exhaustive_matching_progress,
     mapping_progress,
+    sequential_matching_overlap,
 )
+
+
+def test_single_video_uses_sequential_matching_by_default():
+    assert colmap_matcher_name(1) == "sequential_matcher"
+
+
+def test_multiple_videos_use_exhaustive_matching():
+    assert colmap_matcher_name(2) == "exhaustive_matcher"
+
+
+def test_exhaustive_matching_can_be_forced_for_one_video():
+    assert colmap_matcher_name(1, True) == "exhaustive_matcher"
+
+
+def test_exhaustive_matching_uses_stricter_geometric_verification():
+    assert exhaustive_geometry_args() == [
+        "--TwoViewGeometry.min_num_inliers",
+        "50",
+        "--TwoViewGeometry.min_inlier_ratio",
+        "0.30",
+        "--TwoViewGeometry.max_error",
+        "2.0",
+    ]
+
+
+def test_sequential_overlap_is_bounded_by_available_frames():
+    assert sequential_matching_overlap(12, 6.0) == 10
+
+
+def test_exhaustive_matching_progress_reports_linear_block_progress():
+    messages = []
+    reporter = exhaustive_matching_progress(messages.append)
+
+    reporter("Processing block [1/3, 1/3]")
+    reporter("Processing block [1/3, 2/3]")
+    reporter("Processing block [3/3, 3/3]")
+
+    assert messages == [
+        "Matching: 1/9 blocks processed.",
+        "Matching: 2/9 blocks processed.",
+        "Matching: 9/9 blocks processed.",
+    ]
 
 
 def test_mapping_progress_ignores_repeated_registration_and_finishes():
