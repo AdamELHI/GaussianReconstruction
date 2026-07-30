@@ -483,23 +483,50 @@ def indexed_colmap_progress(progress_callback, stage: str, marker: str):
     return report
 
 
+class MappingProgress:
+    def __init__(self, progress_callback, total_frames: int):
+        self.progress_callback = progress_callback
+        self.total_frames = total_frames
+        self.registering_pattern = re.compile(r"Registering image #(\d+)")
+        self.dealt_with: set[str] = set()
+
+    def __call__(self, line: str) -> None:
+        match = self.registering_pattern.search(line)
+        if not match or match.group(1) in self.dealt_with:
+            return
+
+        self.dealt_with.add(match.group(1))
+        emit_progress(
+            self.progress_callback,
+            f"Mapping: {len(self.dealt_with)}/{self.total_frames} "
+            "frames dealt with.",
+        )
+
+    def finish(self, registered_frames: int | None) -> None:
+        if registered_frames is None:
+            emit_progress(
+                self.progress_callback,
+                f"Mapping: {self.total_frames}/{self.total_frames} "
+                "frames dealt with.",
+            )
+            return
+
+        registered_frames = min(max(registered_frames, 0), self.total_frames)
+        skipped_frames = self.total_frames - registered_frames
+        details = f"{registered_frames} registered"
+        if skipped_frames:
+            details += f", {skipped_frames} skipped"
+        emit_progress(
+            self.progress_callback,
+            f"Mapping: {self.total_frames}/{self.total_frames} "
+            f"frames dealt with ({details}).",
+        )
+
+
 def mapping_progress(progress_callback, total_frames: int):
     if progress_callback is None:
         return None
-
-    registering_pattern = re.compile(r"Registering image #(\d+)")
-    dealt_with: set[str] = set()
-
-    def report(line: str) -> None:
-        match = registering_pattern.search(line)
-        if match:
-            dealt_with.add(match.group(1))
-            emit_progress(
-                progress_callback,
-                f"Mapping: {len(dealt_with)}/{total_frames} frames dealt with.",
-            )
-
-    return report
+    return MappingProgress(progress_callback, total_frames)
 
 
 def tool_output_progress(progress_callback, stage: str):
@@ -809,6 +836,20 @@ def colmap_database_match_count(database_path: Path) -> int:
 
     finally : 
         database.close()
+
+
+def colmap_registered_image_count(model_dir: Path) -> int | None:
+    """Read the registered image count from a COLMAP sparse model."""
+    images_bin = model_dir / "images.bin"
+    try:
+        with images_bin.open("rb") as model_file:
+            count_bytes = model_file.read(8)
+    except OSError:
+        return None
+
+    if len(count_bytes) != 8:
+        return None
+    return int.from_bytes(count_bytes, byteorder="little", signed=False)
 
 
 
@@ -1207,15 +1248,20 @@ def main(
             "--Mapper.filter_max_reproj_error", "2",
             "--Mapper.max_reg_trials", "10",
         ]
+        mapping_reporter = mapping_progress(progress_callback, nb_saved)
         run_step(
             "mapper",
             mapper_args,
             progress_callback=progress_callback,
             user_message="Construction of an initial 3D structure from the images.",
-            done_message="Basic 3D structure constructed.",
-            output_callback=mapping_progress(progress_callback, nb_saved),
+            output_callback=mapping_reporter,
             pause_controller=pause_controller,
         )
+        if mapping_reporter is not None:
+            mapping_reporter.finish(
+                colmap_registered_image_count(sparse_dir / "0")
+            )
+        emit_progress(progress_callback, "Basic 3D structure constructed.")
         if colmap_track:
             colmap_model_dir = sparse_dir / "0"
             gui_colmap = os.environ.get(
