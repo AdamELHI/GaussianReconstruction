@@ -203,6 +203,18 @@ def exhaustive_geometry_args() -> list[str]:
     ]
 
 
+def create_reconstruction_work_dir(
+    root_dir: Path = LAST_RECONSTRUCTION_DIR,
+) -> Path:
+    root_dir.mkdir(parents=True, exist_ok=True)
+    return Path(
+        tempfile.mkdtemp(
+            prefix="reconstruction-",
+            dir=root_dir,
+        )
+    )
+
+
 class PauseManager:
     def __init__(self):
         self._resume_event = threading.Event()
@@ -1006,10 +1018,8 @@ def main(
         progress_callback,
         "Checking the video and preparing the output folder.",
     )
-    tmp_dir = LAST_RECONSTRUCTION_DIR
-    if tmp_dir.exists():
-        shutil.rmtree(tmp_dir)
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = create_reconstruction_work_dir()
+    print(f"Reconstruction working directory: {tmp_dir}")
     images_dir = tmp_dir / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
     emit_progress(
@@ -1495,7 +1505,6 @@ def main(
                 pause_controller.wait_if_paused()
             emit_progress(progress_callback, "Deleting temporary files.")
             shutil.rmtree(tmp_dir, ignore_errors=True)
-            tmp_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"Done: {ply_path}", flush=True)
         emit_progress(

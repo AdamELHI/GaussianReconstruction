@@ -1,6 +1,7 @@
 from model.run_processing import (
     colmap_matcher_name,
     colmap_registered_image_count,
+    create_reconstruction_work_dir,
     exhaustive_geometry_args,
     exhaustive_matching_progress,
     mapping_progress,
@@ -29,6 +30,17 @@ def test_exhaustive_matching_uses_stricter_geometric_verification():
         "--TwoViewGeometry.max_error",
         "2.0",
     ]
+
+
+def test_reconstructions_use_distinct_working_directories(tmp_path):
+    first = create_reconstruction_work_dir(tmp_path)
+    second = create_reconstruction_work_dir(tmp_path)
+
+    assert first != second
+    assert first.parent == tmp_path
+    assert second.parent == tmp_path
+    assert first.is_dir()
+    assert second.is_dir()
 
 
 def test_sequential_overlap_is_bounded_by_available_frames():

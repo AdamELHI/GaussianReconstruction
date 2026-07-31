@@ -49,7 +49,10 @@ a maximum geometric error of 2 pixels.
 - **Use GPU** speeds up processing when a compatible GPU and the required drivers are available.
 - **Force exhaustive matching** compares every extracted image pair, even when only one video is selected. It can improve connections between non-consecutive viewpoints but increases processing time.
 - **Skip alignment** disables the final PCA alignment. Use this option only when PCA alignment distorts the reconstructed scene because of a geometric bias.
-- **Keep temporary files** preserves the intermediate COLMAP and Brush working files after reconstruction.
+- **Keep temporary files** preserves the intermediate COLMAP and Brush working
+  files after reconstruction. Each run uses a separate
+  `LastReconstruction/reconstruction-*` directory so concurrent application
+  instances cannot overwrite each other's working files.
 - **Open the COLMAP model in its GUI** opens the sparse camera reconstruction for inspection before Brush training.
 
 ## Building the application
