@@ -215,6 +215,10 @@ def create_reconstruction_work_dir(
     )
 
 
+def video_frames_dir(images_dir: Path, video_number: int) -> Path:
+    return images_dir / f"video_{video_number:03d}"
+
+
 class PauseManager:
     def __init__(self):
         self._resume_event = threading.Event()
@@ -990,6 +994,7 @@ def main(
     pause_controller=None,
     colmap_track=False,
     force_exhaustive_matcher=False,
+    video_ranges=None,
 ) -> int:
     if not np.isfinite(frame_rate) or frame_rate <= 0:
         raise ValueError("Frame rate must be greater than zero.")
@@ -1074,6 +1079,16 @@ def main(
         nb_saved = 0
         total_video_duration_seconds = 0.0
         for video_number, source_path in enumerate(input_paths, start=1):
+            current_video_frames_dir = video_frames_dir(
+                images_dir,
+                video_number,
+            )
+            current_video_frames_dir.mkdir(parents=True, exist_ok=True)
+            source_range = (
+                (video_ranges or {}).get(str(source_path), {}) or {}
+            )
+            video_start_time = source_range.get("start_time", start_time)
+            video_end_time = source_range.get("end_time", end_time)
             emit_progress(
                 progress_callback,
                 f"Extracting video {video_number}/{len(input_paths)}: "
@@ -1105,11 +1120,11 @@ def main(
                     )
 
                 end_frame = int(video_capture.get(cv.CAP_PROP_FRAME_COUNT))
-                if start_time:
-                    h, m, sec = map(int, start_time.split(":"))
+                if video_start_time:
+                    h, m, sec = map(int, video_start_time.split(":"))
                     nb_frame = int((h * 3600 + m * 60 + sec) * fps)
-                if end_time:
-                    h, m, sec = map(int, end_time.split(":"))
+                if video_end_time:
+                    h, m, sec = map(int, video_end_time.split(":"))
                     end_frame = min(
                         end_frame,
                         int((h * 3600 + m * 60 + sec) * fps),
@@ -1142,8 +1157,7 @@ def main(
                         _, laplacian_stddev = cv.meanStdDev(laplacian)
                         sharpness = float(laplacian_stddev[0, 0] ** 2)
 
-                        image_path = images_dir / (
-                            f"video_{video_number:03d}_"
+                        image_path = current_video_frames_dir / (
                             f"frame_{saved_for_video:06d}.jpg"
                         )
                         if not cv.imwrite(str(image_path), image):
@@ -1224,6 +1238,8 @@ def main(
             "--image_path",
             str(images_dir),
             "--ImageReader.single_camera",
+            "0",
+            "--ImageReader.single_camera_per_folder",
             "1",
             "--ImageReader.camera_model",
             "SIMPLE_RADIAL",
@@ -1541,6 +1557,7 @@ def run(
     skipalign=False,
     colmaptrack=False,
     forceexhaustivematcher=False,
+    videoranges=None,
     progress_callback=None,
     pause_controller=None,
 ):
@@ -1556,6 +1573,7 @@ def run(
         skip_align=skipalign,
         colmap_track=colmaptrack,
         force_exhaustive_matcher=forceexhaustivematcher,
+        video_ranges=videoranges,
         progress_callback=progress_callback,
         pause_controller=pause_controller,
     )

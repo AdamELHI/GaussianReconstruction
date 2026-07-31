@@ -112,7 +112,11 @@ class AppController(QObject):
             self.view,
             "Select one or more videos",
             initial_directory,
-            "Video Files (*.mp4 *.avi *.mov *.mkv *.webm)",
+            (
+                "Video Files "
+                "(*.mp4 *.MP4 *.avi *.AVI *.mov *.MOV "
+                "*.mkv *.MKV *.webm *.WEBM)"
+            ),
         )
         if not file_paths:
             return
@@ -417,7 +421,11 @@ class AppController(QObject):
 
 
     def open_settings(self):
-        dialog = Settings(self.reconstruction_parameters, self.view)
+        dialog = Settings(
+            self.reconstruction_parameters,
+            input_paths=self.view.get_input_paths(),
+            parent=self.view,
+        )
         while dialog.exec():
             parameters = dialog.get_parameters()
             try:

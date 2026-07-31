@@ -6,6 +6,7 @@ from model.run_processing import (
     exhaustive_matching_progress,
     mapping_progress,
     sequential_matching_overlap,
+    video_frames_dir,
 )
 
 
@@ -41,6 +42,11 @@ def test_reconstructions_use_distinct_working_directories(tmp_path):
     assert second.parent == tmp_path
     assert first.is_dir()
     assert second.is_dir()
+
+
+def test_each_video_uses_a_separate_frame_directory(tmp_path):
+    assert video_frames_dir(tmp_path, 1) == tmp_path / "video_001"
+    assert video_frames_dir(tmp_path, 2) == tmp_path / "video_002"
 
 
 def test_sequential_overlap_is_bounded_by_available_frames():

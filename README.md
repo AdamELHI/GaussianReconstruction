@@ -23,10 +23,14 @@ displayed under the **Video** label in the main menu.
 
 All selected videos are processed as one reconstruction:
 
-1. Frames are extracted from each video into the same image dataset. Their file
-   names include a video number to prevent collisions.
+1. Frames are extracted into the same image dataset, with one numbered
+   subdirectory per video (`video_001`, `video_002`, and so on).
 2. COLMAP feature extraction runs once on the complete dataset.
 3. Matching and mapping also run once on all extracted frames.
+
+COLMAP creates one camera calibration per video directory. This allows videos
+recorded with different devices, resolutions, or orientations to be processed
+together without forcing them to share the same optical parameters.
 
 The matching strategy is selected automatically:
 
@@ -45,7 +49,11 @@ a maximum geometric error of 2 pixels.
 ## Settings
 
 - **Frame rate** controls the number of frames extracted per second. Increase it when the camera moves quickly so that the reconstruction captures enough intermediate viewpoints.
-- **Start time / End time** define the portion of each selected video to process. Use the `HH:MM:SS` format; for example, `00:00:15` starts at 15 seconds and `00:15:00` starts at 15 minutes.
+- **Start time / End time** define the portion of each selected video to
+  process. After selecting the videos, open the settings: a separate row is
+  displayed for every video, with its own start and end fields. Use the
+  `HH:MM:SS` format; leave the start empty to begin at the first frame and the
+  end empty to continue until the end of that video.
 - **Use GPU** speeds up processing when a compatible GPU and the required drivers are available.
 - **Force exhaustive matching** compares every extracted image pair, even when only one video is selected. It can improve connections between non-consecutive viewpoints but increases processing time.
 - **Skip alignment** disables the final PCA alignment. Use this option only when PCA alignment distorts the reconstructed scene because of a geometric bias.

@@ -65,6 +65,18 @@ class ConstructionModel:
         minutes, seconds = divmod(remainder, 60)
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
+    @staticmethod
+    def video_range_for_source(
+        source: Path,
+        parameters: dict[str, Any],
+    ) -> tuple[str | None, str | None]:
+        video_ranges = parameters.get("video_ranges") or {}
+        source_range = video_ranges.get(str(source), {}) or {}
+        return (
+            source_range.get("start_time", parameters.get("start_time")),
+            source_range.get("end_time", parameters.get("end_time")),
+        )
+
     def validate_reconstruction_parameters(
         self,
         input_path,
@@ -77,25 +89,51 @@ class ConstructionModel:
         if int(parameters["total_train_iters"]) <= 0:
             raise ValueError("Brush iterations must be greater than zero.")
 
-        start_seconds = self.parse_video_time(
-            parameters.get("start_time"),
-            "Start time",
-        )
-        end_seconds = self.parse_video_time(
-            parameters.get("end_time"),
-            "End time",
-        )
-
-        if end_seconds is not None and end_seconds <= (start_seconds or 0):
-            raise ValueError("End time must be later than start time.")
-
         input_paths = self.normalize_input_paths(input_path)
-        if not input_paths or (start_seconds is None and end_seconds is None):
+        if not input_paths:
+            start_seconds = self.parse_video_time(
+                parameters.get("start_time"),
+                "Start time",
+            )
+            end_seconds = self.parse_video_time(
+                parameters.get("end_time"),
+                "End time",
+            )
+            if end_seconds is not None and end_seconds <= (start_seconds or 0):
+                raise ValueError("End time must be later than start time.")
+            return
+
+        parsed_ranges = []
+        for source in input_paths:
+            start_time, end_time = self.video_range_for_source(
+                source,
+                parameters,
+            )
+            start_seconds = self.parse_video_time(
+                start_time,
+                f"Start time for {source.name}",
+            )
+            end_seconds = self.parse_video_time(
+                end_time,
+                f"End time for {source.name}",
+            )
+            if end_seconds is not None and end_seconds <= (start_seconds or 0):
+                raise ValueError(
+                    f"End time must be later than start time for {source.name}."
+                )
+            parsed_ranges.append((source, start_seconds, end_seconds))
+
+        if not any(
+            start_seconds is not None or end_seconds is not None
+            for _, start_seconds, end_seconds in parsed_ranges
+        ):
             return
 
         import cv2 as cv
 
-        for source in input_paths:
+        for source, start_seconds, end_seconds in parsed_ranges:
+            if start_seconds is None and end_seconds is None:
+                continue
             video_capture = cv.VideoCapture(str(source))
             try:
                 if not video_capture.isOpened():
@@ -144,6 +182,7 @@ class ConstructionModel:
         skip_align: bool = False,
         colmap_track: bool = False,
         force_exhaustive_matcher: bool = False,
+        video_ranges: dict[str, dict[str, str | None]] | None = None,
         progress_callback: Callable[[str], None] | None = None,
         pause_controller: Any | None = None,
     ) -> dict[str, Any]:
@@ -160,6 +199,7 @@ class ConstructionModel:
                 "fps": fps,
                 "start_time": start_time,
                 "end_time": end_time,
+                "video_ranges": video_ranges or {},
                 "total_train_iters": total_train_iters,
             },
         )
@@ -185,6 +225,7 @@ class ConstructionModel:
                 skipalign=skip_align,
                 colmaptrack=colmap_track,
                 forceexhaustivematcher=force_exhaustive_matcher,
+                videoranges=video_ranges or {},
                 progress_callback=progress_callback,
                 pause_controller=pause_controller,
             )
