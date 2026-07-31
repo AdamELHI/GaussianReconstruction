@@ -12,6 +12,7 @@ The expected source layout is:
 GaussianReconstruction/
 |-- Brush/
 |-- Colmap/
+|-- Colmap_no_cuda/
 |-- FFmpeg/
 |-- Software/
 |   |-- controller/
@@ -43,20 +44,16 @@ packaging script.
 
 ### Download COLMAP
 
-Download COLMAP 4.1.1 or newer and extract a Windows archive from the
-[official COLMAP releases](https://github.com/colmap/colmap/releases) into
-`Colmap`. Keep the complete extracted directory: `colmap.exe` needs the DLLs
-and plugins shipped beside it.
+Download both Windows archives for COLMAP 4.1.1 or newer from the
+[official COLMAP releases](https://github.com/colmap/colmap/releases). Extract
+the CUDA archive into `Colmap` and the no-CUDA archive into `Colmap_no_cuda`.
+Keep both complete extracted directories: `colmap.exe` needs the DLLs and
+plugins shipped beside it.
 
-For a package distributed to computers without NVIDIA GPUs, use the `no-cuda`
-archive. The application automatically falls back to CPU processing when the
-COLMAP bundle has no CUDA support or no compatible NVIDIA GPU is detected.
-
-Use the CUDA archive only for a separate NVIDIA-oriented build. On such a
-machine, enable `Use CUDA for COLMAP (NVIDIA only)` in the application settings.
-The target computer still needs a compatible NVIDIA GPU and driver. Installing
-a CUDA COLMAP build on a computer without CUDA provides no speed benefit and
-is less portable.
+Both variants are included in the same standalone package. At runtime, the
+application selects CUDA only when the setting is enabled and a compatible
+NVIDIA GPU is detected. On AMD, Intel, or systems where the CUDA executable
+cannot start, it selects the no-CUDA bundle before launching COLMAP.
 
 Brush is separate from this setting: Brush uses WebGPU-compatible technology
 and supports NVIDIA, AMD, and Intel hardware.
@@ -83,7 +80,8 @@ If the dependency folders are elsewhere, pass them explicitly:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build_windows.ps1 `
-  -ColmapDir "C:\Tools\COLMAP" `
+  -ColmapDir "C:\Tools\COLMAP-CUDA" `
+  -ColmapNoCudaDir "C:\Tools\COLMAP-NO-CUDA" `
   -BrushDir "C:\Tools\Brush" `
   -FfmpegDir "C:\Tools\FFmpeg"
 ```
@@ -94,16 +92,16 @@ the trust metadata required by Smart App Control.
 
 The script:
 
-1. validates that the folders contain COLMAP, Brush, FFmpeg, and FFprobe;
-2. verifies that a Qt-enabled COLMAP bundle also contains
+1. validates both CUDA and no-CUDA COLMAP bundles, Brush, FFmpeg, and FFprobe;
+2. verifies that Qt-enabled COLMAP bundles also contain
    `platforms\qwindows.dll`;
 3. verifies that Node.js and npm are available on the build computer;
 4. creates `Software\.venv-windows` with Python 3.12;
 5. installs the Python build dependencies;
 6. builds the Python application without processing the external tools;
-7. adds the complete COLMAP, Brush, and FFmpeg directories with NTFS hard links;
+7. adds both complete COLMAP variants, Brush, and FFmpeg with NTFS hard links;
 8. installs the pinned `splat-transform` package and bundles `node.exe`;
-9. verifies that the packaged COLMAP and `splat-transform` commands can start;
+9. verifies that both packaged COLMAP variants and `splat-transform` can start;
 10. creates the application folder.
 
 The final user does not need Python, Node.js, npm, PyInstaller, COLMAP, Brush,

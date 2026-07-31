@@ -816,6 +816,69 @@ def cuda_gpu_available() -> bool:
     )
 
 
+def select_colmap_executable(
+    gpu_requested: bool,
+    progress_callback=None,
+) -> str:
+    """Select the CUDA or CPU COLMAP bundle before starting the executable."""
+    if os.environ.get("COLMAP_BIN") or os.name != "nt":
+        return tool_path("colmap")
+
+    cuda_candidates = [
+        BUNDLED_TOOLS_DIR / "colmap-cuda/bin/colmap.exe",
+        PROJECT_ROOT / "Colmap/bin/colmap.exe",
+        BUNDLED_TOOLS_DIR / "colmap/bin/colmap.exe",
+    ]
+    cpu_candidates = [
+        BUNDLED_TOOLS_DIR / "colmap-no-cuda/bin/colmap.exe",
+        PROJECT_ROOT / "Colmap_no_cuda/bin/colmap.exe",
+    ]
+
+    def first_working(candidates: list[Path]) -> str | None:
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            resolved = str(candidate.resolve())
+            if command_output([resolved, "-h"], timeout=30) is not None:
+                return resolved
+        return None
+
+    nvidia_available = gpu_requested and cuda_gpu_available()
+    if nvidia_available:
+        selected = first_working(cuda_candidates)
+        if selected:
+            message = "NVIDIA GPU detected; selecting the CUDA COLMAP bundle."
+            print(message)
+            emit_progress(progress_callback, message)
+            return selected
+
+        fallback_reason = "the CUDA COLMAP bundle could not start"
+    elif not gpu_requested:
+        fallback_reason = "CUDA was disabled in the reconstruction settings"
+    else:
+        fallback_reason = "no compatible NVIDIA GPU was detected"
+
+    selected = first_working(cpu_candidates)
+    if selected:
+        message = f"Selecting the CPU COLMAP bundle because {fallback_reason}."
+        print(message)
+        emit_progress(progress_callback, message)
+        return selected
+
+    # Preserve compatibility with older/source layouts containing one bundle.
+    selected = first_working(cuda_candidates)
+    if selected:
+        message = (
+            "The CPU COLMAP bundle is unavailable; using the CUDA bundle "
+            "with GPU processing disabled."
+        )
+        print(message)
+        emit_progress(progress_callback, message)
+        return selected
+
+    raise FileNotFoundError("No working COLMAP executable was found.")
+
+
 def available_gpu_memory_bytes() -> int:
     nvidia_smi = shutil.which("nvidia-smi")
     if not nvidia_smi:
@@ -1056,7 +1119,7 @@ def main(
             cwd=brush_working_dir,
         )
     else :
-        colmap = tool_path("colmap")
+        colmap = select_colmap_executable(use_gpu, progress_callback)
         report_colmap_identity(colmap, progress_callback)
         use_colmap_gpu = configure_colmap_gpu(
             colmap,

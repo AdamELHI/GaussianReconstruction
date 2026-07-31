@@ -1,5 +1,6 @@
 param(
     [string]$ColmapDir = "",
+    [string]$ColmapNoCudaDir = "",
     [string]$BrushDir = "",
     [string]$FfmpegDir = "",
     [string]$SplatTransformVersion = "3.1.7"
@@ -12,6 +13,9 @@ $InstallationRoot = Split-Path -Parent $ProjectDir
 if (-not $ColmapDir) {
     $ColmapDir = Join-Path $InstallationRoot "Colmap"
 }
+if (-not $ColmapNoCudaDir) {
+    $ColmapNoCudaDir = Join-Path $InstallationRoot "Colmap_no_cuda"
+}
 if (-not $BrushDir) {
     $BrushDir = Join-Path $InstallationRoot "Brush"
 }
@@ -20,7 +24,10 @@ if (-not $FfmpegDir) {
 }
 
 if (-not (Test-Path $ColmapDir -PathType Container)) {
-    throw "COLMAP directory not found at '$ColmapDir'. Download and extract a Windows release into the 'Colmap' directory."
+    throw "CUDA COLMAP directory not found at '$ColmapDir'. Download and extract the CUDA Windows release into the 'Colmap' directory."
+}
+if (-not (Test-Path $ColmapNoCudaDir -PathType Container)) {
+    throw "CPU COLMAP directory not found at '$ColmapNoCudaDir'. Download and extract the no-CUDA Windows release into the 'Colmap_no_cuda' directory."
 }
 if (-not (Test-Path $BrushDir -PathType Container)) {
     throw "Brush directory not found at '$BrushDir'. Download and extract the Windows x64 Brush release into the 'Brush' directory."
@@ -33,6 +40,7 @@ if (-not $SplatTransformVersion) {
 }
 
 $ColmapDir = (Resolve-Path $ColmapDir).Path
+$ColmapNoCudaDir = (Resolve-Path $ColmapNoCudaDir).Path
 $BrushDir = (Resolve-Path $BrushDir).Path
 $FfmpegDir = (Resolve-Path $FfmpegDir).Path
 $NodeExecutable = Get-Command "node.exe" -CommandType Application -ErrorAction SilentlyContinue |
@@ -40,6 +48,7 @@ $NodeExecutable = Get-Command "node.exe" -CommandType Application -ErrorAction S
 $NpmExecutable = Get-Command "npm.cmd" -CommandType Application -ErrorAction SilentlyContinue |
     Select-Object -First 1
 $ColmapExecutable = Get-ChildItem -Path $ColmapDir -Filter "colmap.exe" -File -Recurse | Select-Object -First 1
+$ColmapNoCudaExecutable = Get-ChildItem -Path $ColmapNoCudaDir -Filter "colmap.exe" -File -Recurse | Select-Object -First 1
 $BrushExecutable = Get-ChildItem -Path $BrushDir -Include "brush.exe", "brush-app.exe", "brush_app.exe" -File -Recurse | Select-Object -First 1
 $FfmpegExecutable = Get-ChildItem -Path $FfmpegDir -Filter "ffmpeg.exe" -File -Recurse | Select-Object -First 1
 $FfprobeExecutable = Get-ChildItem -Path $FfmpegDir -Filter "ffprobe.exe" -File -Recurse | Select-Object -First 1
@@ -47,9 +56,16 @@ $ColmapQtCore = Get-ChildItem -Path $ColmapDir -Filter "Qt*Core.dll" -File -Recu
 $ColmapQtPlatformPlugin = Get-ChildItem -Path $ColmapDir -Filter "qwindows.dll" -File -Recurse |
     Where-Object { $_.Directory.Name -eq "platforms" } |
     Select-Object -First 1
+$ColmapNoCudaQtCore = Get-ChildItem -Path $ColmapNoCudaDir -Filter "Qt*Core.dll" -File -Recurse | Select-Object -First 1
+$ColmapNoCudaQtPlatformPlugin = Get-ChildItem -Path $ColmapNoCudaDir -Filter "qwindows.dll" -File -Recurse |
+    Where-Object { $_.Directory.Name -eq "platforms" } |
+    Select-Object -First 1
 
 if (-not $ColmapExecutable) {
-    throw "colmap.exe was not found below '$ColmapDir'."
+    throw "CUDA colmap.exe was not found below '$ColmapDir'."
+}
+if (-not $ColmapNoCudaExecutable) {
+    throw "CPU colmap.exe was not found below '$ColmapNoCudaDir'."
 }
 if (-not $BrushExecutable) {
     throw "brush.exe, brush-app.exe, or brush_app.exe was not found below '$BrushDir'."
@@ -61,7 +77,10 @@ if (-not $NodeExecutable -or -not $NpmExecutable) {
     throw "Node.js and npm are required to bundle splat-transform. Install a 64-bit Node.js release and ensure node.exe and npm.cmd are in PATH."
 }
 if ($ColmapQtCore -and -not $ColmapQtPlatformPlugin) {
-    throw "The selected COLMAP build uses Qt, but platforms\qwindows.dll is missing. Keep the complete official COLMAP archive or use a headless COLMAP build."
+    throw "The CUDA COLMAP build uses Qt, but platforms\qwindows.dll is missing. Keep the complete official archive."
+}
+if ($ColmapNoCudaQtCore -and -not $ColmapNoCudaQtPlatformPlugin) {
+    throw "The CPU COLMAP build uses Qt, but platforms\qwindows.dll is missing. Keep the complete official archive."
 }
 
 $PreviousErrorActionPreference = $ErrorActionPreference
@@ -71,9 +90,23 @@ $ColmapFeatureExitCode = $LASTEXITCODE
 $ErrorActionPreference = $PreviousErrorActionPreference
 if (
     $ColmapFeatureExitCode -ne 0 -or
-    $ColmapFeatureHelp -notmatch [regex]::Escape("--FeatureExtraction.num_threads")
+    $ColmapFeatureHelp -notmatch [regex]::Escape("--FeatureExtraction.num_threads") -or
+    $ColmapFeatureHelp -notmatch "with CUDA"
 ) {
-    throw "The selected COLMAP build is incompatible. COLMAP 4.1.1 or newer is required."
+    throw "The CUDA COLMAP build is incompatible. A CUDA-enabled COLMAP 4.1.1 or newer build is required."
+}
+
+$PreviousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$ColmapNoCudaFeatureHelp = & $ColmapNoCudaExecutable.FullName feature_extractor -h 2>&1 | Out-String
+$ColmapNoCudaFeatureExitCode = $LASTEXITCODE
+$ErrorActionPreference = $PreviousErrorActionPreference
+if (
+    $ColmapNoCudaFeatureExitCode -ne 0 -or
+    $ColmapNoCudaFeatureHelp -notmatch [regex]::Escape("--FeatureExtraction.num_threads") -or
+    $ColmapNoCudaFeatureHelp -notmatch "without CUDA"
+) {
+    throw "The CPU COLMAP build is incompatible. A no-CUDA COLMAP 4.1.1 or newer build is required."
 }
 
 $VirtualEnvironment = Join-Path $ProjectDir ".venv-windows"
@@ -122,7 +155,8 @@ try {
 $OutputDir = Join-Path $ProjectDir "dist\GaussianReconstruction"
 $OutputExe = Join-Path $OutputDir "GaussianReconstruction.exe"
 $BundledToolsRoot = Join-Path $OutputDir "_internal\tools"
-$BundledColmap = Join-Path $OutputDir "_internal\tools\colmap"
+$BundledColmapCuda = Join-Path $OutputDir "_internal\tools\colmap-cuda"
+$BundledColmapNoCuda = Join-Path $OutputDir "_internal\tools\colmap-no-cuda"
 $BundledBrush = Join-Path $OutputDir "_internal\tools\brush"
 $BundledFfmpeg = Join-Path $OutputDir "_internal\tools\ffmpeg"
 $BundledSplatTransform = Join-Path $OutputDir "_internal\tools\splat-transform"
@@ -169,7 +203,8 @@ function Add-ToolBundle {
 
 New-Item -ItemType Directory -Path $BundledToolsRoot -Force | Out-Null
 Write-Host "Adding external tools without PyInstaller processing."
-Add-ToolBundle -Source $ColmapDir -Destination $BundledColmap
+Add-ToolBundle -Source $ColmapDir -Destination $BundledColmapCuda
+Add-ToolBundle -Source $ColmapNoCudaDir -Destination $BundledColmapNoCuda
 Add-ToolBundle -Source $BrushDir -Destination $BundledBrush
 Add-ToolBundle -Source $FfmpegDir -Destination $BundledFfmpeg
 
@@ -197,28 +232,38 @@ try {
     throw "Could not bundle node.exe for splat-transform. $($_.Exception.Message)"
 }
 
-foreach ($BundledTool in @($BundledColmap, $BundledBrush, $BundledFfmpeg, $BundledSplatTransform)) {
+foreach ($BundledTool in @($BundledColmapCuda, $BundledColmapNoCuda, $BundledBrush, $BundledFfmpeg, $BundledSplatTransform)) {
     if (-not (Test-Path $BundledTool -PathType Container)) {
         throw "The packaged application is incomplete: '$BundledTool' is missing."
     }
 }
 
-$PackagedColmapExecutable = Get-ChildItem -Path $BundledColmap -Filter "colmap.exe" -File -Recurse |
+$PackagedColmapCudaExecutable = Get-ChildItem -Path $BundledColmapCuda -Filter "colmap.exe" -File -Recurse |
     Select-Object -First 1
-if (-not $PackagedColmapExecutable) {
-    throw "The packaged application is incomplete: colmap.exe is missing."
+$PackagedColmapNoCudaExecutable = Get-ChildItem -Path $BundledColmapNoCuda -Filter "colmap.exe" -File -Recurse |
+    Select-Object -First 1
+if (-not $PackagedColmapCudaExecutable -or -not $PackagedColmapNoCudaExecutable) {
+    throw "The packaged application is incomplete: a CUDA or CPU colmap.exe is missing."
 }
 
 $PreviousErrorActionPreference = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
-$PackagedColmapHelp = & $PackagedColmapExecutable.FullName -h 2>&1 | Out-String
-$PackagedColmapExitCode = $LASTEXITCODE
+$PackagedColmapCudaHelp = & $PackagedColmapCudaExecutable.FullName -h 2>&1 | Out-String
+$PackagedColmapCudaExitCode = $LASTEXITCODE
+$PackagedColmapNoCudaHelp = & $PackagedColmapNoCudaExecutable.FullName -h 2>&1 | Out-String
+$PackagedColmapNoCudaExitCode = $LASTEXITCODE
 $ErrorActionPreference = $PreviousErrorActionPreference
 if (
-    $PackagedColmapExitCode -ne 0 -or
-    $PackagedColmapHelp -notmatch "COLMAP"
+    $PackagedColmapCudaExitCode -ne 0 -or
+    $PackagedColmapCudaHelp -notmatch "with CUDA"
 ) {
-    throw "The packaged COLMAP executable failed its startup check with exit code $PackagedColmapExitCode. Check the Windows Code Integrity log for a blocked DLL."
+    throw "The packaged CUDA COLMAP executable failed its startup check with exit code $PackagedColmapCudaExitCode. Check the Windows Code Integrity log for a blocked DLL."
+}
+if (
+    $PackagedColmapNoCudaExitCode -ne 0 -or
+    $PackagedColmapNoCudaHelp -notmatch "without CUDA"
+) {
+    throw "The packaged CPU COLMAP executable failed its startup check with exit code $PackagedColmapNoCudaExitCode. Check the Windows Code Integrity log for a blocked DLL."
 }
 
 $SplatTransformVersionCommand = "`"$PackagedSplatTransform`" --version 2>&1"
@@ -234,5 +279,6 @@ if (
 
 Write-Host "Windows application folder created: $OutputDir"
 Write-Host "Executable: $OutputExe"
+Write-Host "Bundled COLMAP: CUDA and CPU variants"
 Write-Host "Bundled splat-transform: $($PackagedSplatTransformVersion.Trim())"
 Write-Host "Distribute the complete GaussianReconstruction folder, not the executable alone."
