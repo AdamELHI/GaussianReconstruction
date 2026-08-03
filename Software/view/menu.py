@@ -18,24 +18,22 @@ class Menu(QMainWindow):
         self.setWindowTitle("Gaussian Reconstruction")
         self.resize(1000, 700)
 
-        self.input_path = ""
+        self.input_paths = []
         self.output_path = ""
 
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.main_layout = QVBoxLayout(self.central_widget)
 
-#Building the top bar with the settings button, the load reconstruction button and the close button
+#Building the top bar with the settings button and the close button
 
         self.top_bar_layout = QHBoxLayout()
         self.top_bar_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.settings_button = QPushButton("⚙")
         self.settings_button.setFixedWidth(50)
-        self.load_reconstruct_button = QPushButton("Load a .ply file")
         self.close_button = QPushButton("X")
         self.close_button.setFixedWidth(50)
         self.top_bar_layout.addWidget(self.settings_button)
-        self.top_bar_layout.addWidget(self.load_reconstruct_button)
         self.top_bar_layout.addStretch()
         self.top_bar_layout.addWidget(self.close_button)
         self.main_layout.addLayout(self.top_bar_layout)
@@ -125,12 +123,21 @@ class Menu(QMainWindow):
 
         self.main_layout.addLayout(self.content_layout)
 
-    def set_input_path(self, path: str) -> None:
-        self.input_path = path
-        if path:
-            self.input_label.setText(f"Video : {path}")
+    def set_input_paths(self, paths: list[str]) -> None:
+        self.input_paths = list(paths)
+        if self.input_paths:
+            if len(self.input_paths) == 1:
+                self.input_label.setText(f"Video : {self.input_paths[0]}")
+            else:
+                displayed_paths = "\n".join(
+                    f"• {path}" for path in self.input_paths
+                )
+                self.input_label.setText(f"Video :\n{displayed_paths}")
         else:
             self.input_label.setText("Video : No video selected")
+
+    def set_input_path(self, path: str) -> None:
+        self.set_input_paths([path] if path else [])
 
     def set_output_path(self, path: str) -> None:
         self.output_path = path
@@ -160,7 +167,6 @@ class Menu(QMainWindow):
         self.select_output_button.setEnabled(not is_running)
         self.settings_button.setEnabled(not is_running)
         self.load_button.setEnabled(not is_running)
-        self.load_reconstruct_button.setEnabled(not is_running)
         self.close_button.setEnabled(not is_running)
         self.pause_button.setEnabled(is_running)
 
@@ -198,23 +204,23 @@ class Menu(QMainWindow):
         self.select_output_button.setEnabled(controls_enabled)
         self.settings_button.setEnabled(controls_enabled)
         self.load_button.setEnabled(controls_enabled)
-        self.load_reconstruct_button.setEnabled(controls_enabled)
         self.close_button.setEnabled(controls_enabled)
         self.pause_button.setEnabled(False)
         self.cancel_button.setEnabled(False)
 
         if is_loading:
             self.load_button.setText("Loading the reconstruction...")
-            self.load_reconstruct_button.setText("Loading the reconstruction...")
             self.progress_bar.setRange(0, 0)
         else:
             self.load_button.setText("Load a reconstruction")
-            self.load_reconstruct_button.setText("Load a .ply file")
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
 
+    def get_input_paths(self) -> list[str]:
+        return list(self.input_paths)
+
     def get_input_path(self) -> str:
-        return self.input_path
+        return self.input_paths[0] if self.input_paths else ""
 
     def get_output_path(self) -> str:
         return self.output_path
