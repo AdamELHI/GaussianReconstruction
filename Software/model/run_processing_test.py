@@ -25,7 +25,7 @@ def test_exhaustive_matching_can_be_forced_for_one_video():
 def test_exhaustive_matching_uses_stricter_geometric_verification():
     assert exhaustive_geometry_args() == [
         "--TwoViewGeometry.min_num_inliers",
-        "50",
+        "60",
         "--TwoViewGeometry.min_inlier_ratio",
         "0.30",
         "--TwoViewGeometry.max_error",

@@ -82,9 +82,11 @@ class ConstructionModel:
         input_path,
         parameters: dict[str, Any],
     ) -> None:
-        frame_rate = float(parameters["fps"])
-        if not math.isfinite(frame_rate) or frame_rate <= 0:
-            raise ValueError("Frames per second must be greater than zero.")
+        frame_rate = parameters.get("fps")
+        if frame_rate is not None:
+            frame_rate = float(frame_rate)
+            if not math.isfinite(frame_rate) or frame_rate <= 0:
+                raise ValueError("Frames per second must be greater than zero.")
 
         if int(parameters["total_train_iters"]) <= 0:
             raise ValueError("Brush iterations must be greater than zero.")
@@ -173,7 +175,7 @@ class ConstructionModel:
         self,
         input_path,
         output_path: str | None = None,
-        fps: float = 1.0,
+        fps: float | None = None,
         start_time: str | None = None,
         end_time: str | None = None,
         total_train_iters: int = 7000,

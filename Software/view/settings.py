@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 
 class Settings(QDialog):
     DEFAULT_PARAMETERS = {
-        "fps": 1.0,
+        "fps": None,
         "start_time": None,
         "end_time": None,
         "total_train_iters": 7000,
@@ -49,9 +49,14 @@ class Settings(QDialog):
 
         self.fps_input = QDoubleSpinBox()
         self.fps_input.setDecimals(2)
-        self.fps_input.setRange(0.01, 120.0)
+        self.fps_input.setRange(0.0, 120.0)
         self.fps_input.setSingleStep(0.5)
-        self.fps_input.setValue(float(self.parameters["fps"]))
+        self.fps_input.setSpecialValueText("Automatic")
+        self.fps_input.setValue(float(self.parameters["fps"] or 0.0))
+        self.fps_input.setToolTip(
+            "Leave Automatic to select frames from camera motion, or enter "
+            "a frame rate to control the temporal sampling density."
+        )
 
         self.total_train_iters_input = QSpinBox()
         self.total_train_iters_input.setRange(1, 100000000)
@@ -186,7 +191,7 @@ class Settings(QDialog):
             video_ranges = {}
 
         return {
-            "fps": self.fps_input.value(),
+            "fps": self.fps_input.value() or None,
             "start_time": start_time,
             "end_time": end_time,
             "video_ranges": video_ranges,

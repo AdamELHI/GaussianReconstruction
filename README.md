@@ -48,7 +48,15 @@ a maximum geometric error of 2 pixels.
 
 ## Settings
 
-- **Frame rate** controls the number of frames extracted per second. Increase it when the camera moves quickly so that the reconstruction captures enough intermediate viewpoints.
+- **Frame rate** is **Automatic** by default: frames are selected from useful
+  camera motion and relative sharpness. Automatic selection requires a
+  displacement proportional to the image width and normally prefers the
+  sharpest half of the recent video segment. To preserve feature-tracking
+  continuity, it keeps the best available bridge frame before the viewpoint
+  displacement becomes too large. Entering a numerical value switches
+  automatically to temporal sampling: the video is divided into matching time
+  windows and the sharpest usefully moved frame is kept in each window. Windows
+  containing only stationary near-duplicates are rejected.
 - **Start time / End time** define the portion of each selected video to
   process. After selecting the videos, open the settings: a separate row is
   displayed for every video, with its own start and end fields. Use the

@@ -442,9 +442,13 @@ class AppController(QObject):
                 continue
 
             self.reconstruction_parameters = parameters
+            frame_rate = self.reconstruction_parameters["fps"]
+            frame_rate_label = (
+                f"{frame_rate} fps" if frame_rate is not None else "automatic frames"
+            )
             self.view.set_status(
                 "Parameters applied  : "
-                f"{self.reconstruction_parameters['fps']} fps, "
+                f"{frame_rate_label}, "
                 f"{self.reconstruction_parameters['total_train_iters']} iterations."
             )
             return

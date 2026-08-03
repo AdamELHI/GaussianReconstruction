@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 from plyfile import PlyData
 from scipy.spatial.transform import Rotation
+from model.adaptive_frame_selector import AdaptiveFrameSelector
 if os.name == "nt":
     import psutil
 
@@ -195,7 +196,7 @@ def colmap_matcher_name(
 def exhaustive_geometry_args() -> list[str]:
     return [
         "--TwoViewGeometry.min_num_inliers",
-        "50",
+        "60",
         "--TwoViewGeometry.min_inlier_ratio",
         "0.30",
         "--TwoViewGeometry.max_error",
@@ -982,7 +983,7 @@ def align_ply(ply_path: Path, progress_callback=None, pause_controller=None) -> 
 def main(
     input_file,
     output_file,
-    frame_rate=5.0,
+    frame_rate=None,
     start_time=None,
     end_time=None,
     total_train_iters=10000,
@@ -996,7 +997,9 @@ def main(
     force_exhaustive_matcher=False,
     video_ranges=None,
 ) -> int:
-    if not np.isfinite(frame_rate) or frame_rate <= 0:
+    if frame_rate is not None and (
+        not np.isfinite(frame_rate) or frame_rate <= 0
+    ):
         raise ValueError("Frame rate must be greater than zero.")
     if pause_controller:
         pause_controller.wait_if_paused()
@@ -1135,11 +1138,8 @@ def main(
                         f"{source_path}."
                     )
 
-                base_interval = max(1.0, fps / frame_rate)
-                snapshot_every = max(1, round(base_interval))
-                next_snapshot = nb_frame
                 video_capture.set(cv.CAP_PROP_POS_FRAMES, nb_frame)
-                score_mean = None
+                frame_selector = AdaptiveFrameSelector(fps, frame_rate)
                 frame_count = end_frame - nb_frame
                 progress_interval = max(1, frame_count // 100)
 
@@ -1151,47 +1151,25 @@ def main(
                         break
                     processed_count += 1
 
-                    if nb_frame >= next_snapshot:
-                        gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
-                        laplacian = cv.Laplacian(gray, cv.CV_16S)
-                        _, laplacian_stddev = cv.meanStdDev(laplacian)
-                        sharpness = float(laplacian_stddev[0, 0] ** 2)
-
+                    selected = frame_selector.observe(nb_frame, image)
+                    if selected is not None:
                         image_path = current_video_frames_dir / (
-                            f"frame_{saved_for_video:06d}.jpg"
+                            f"frame_{selected.frame_index:06d}.jpg"
                         )
-                        if not cv.imwrite(str(image_path), image):
+                        if not cv.imwrite(str(image_path), selected.image):
                             raise RuntimeError(
-                                f"Could not write extracted frame: {image_path}"
+                                "Could not write extracted frame: "
+                                f"{image_path}"
                             )
                         nb_saved += 1
                         saved_for_video += 1
-                        if score_mean is None:
-                            score_mean = sharpness
-                            target_interval = snapshot_every
-                        else:
-                            sharpness_ratio = sharpness / max(score_mean, 1e-6)
-                            sharpness_ratio = min(
-                                1.5,
-                                max(0.5, sharpness_ratio),
-                            )
-                            target_interval = max(
-                                1,
-                                round(base_interval * sharpness_ratio),
-                            )
-                            score_mean += 0.15 * (sharpness - score_mean)
-
-                        snapshot_every = max(
-                            1,
-                            round((snapshot_every + target_interval) / 2),
-                        )
                         print(
-                            f"Video {video_number}, frame {nb_frame}: "
-                            f"sharpness={sharpness:.2f}, "
-                            f"reference={score_mean:.2f}, "
-                            f"interval={snapshot_every}"
+                            f"Video {video_number}, frame "
+                            f"{selected.frame_index}: "
+                            f"sharpness={selected.sharpness:.2f}, "
+                            f"motion={selected.motion_px:.2f}px, "
+                            f"selection={selected.reason}"
                         )
-                        next_snapshot = nb_frame + snapshot_every
 
                     nb_frame += 1
                     if (
@@ -1205,6 +1183,25 @@ def main(
                         )
                         print(message)
                         emit_progress(progress_callback, message)
+
+                selected = frame_selector.flush()
+                if selected is not None:
+                    image_path = current_video_frames_dir / (
+                        f"frame_{selected.frame_index:06d}.jpg"
+                    )
+                    if not cv.imwrite(str(image_path), selected.image):
+                        raise RuntimeError(
+                            f"Could not write extracted frame: {image_path}"
+                        )
+                    nb_saved += 1
+                    saved_for_video += 1
+                    print(
+                        f"Video {video_number}, frame "
+                        f"{selected.frame_index}: "
+                        f"sharpness={selected.sharpness:.2f}, "
+                        f"motion={selected.motion_px:.2f}px, "
+                        f"selection={selected.reason}"
+                    )
             finally:
                 video_capture.release()
 
@@ -1300,7 +1297,7 @@ def main(
             matcher_args.extend(exhaustive_geometry_args())
             matching_limits = (
                 f"max matches={max_num_matches}, threads={num_threads}, "
-                "min geometric inliers=50, min inlier ratio=0.30, "
+                "min geometric inliers=60, min inlier ratio=0.30, "
                 "max geometric error=2.0 px"
             )
             matching_progress = exhaustive_matching_progress(progress_callback)
@@ -1386,14 +1383,14 @@ def main(
             str(num_threads),
             "--Mapper.max_model_overlap",
             "30",
-            "--Mapper.ba_global_max_refinements","20",
+            "--Mapper.ba_global_max_refinements","5",
             "--Mapper.init_min_num_inliers", "50",
-            "--Mapper.min_num_matches", "10",
+            "--Mapper.min_num_matches", "20",
             "--Mapper.tri_min_angle", "0.5",
             "--Mapper.ba_global_max_num_iterations", "15",
             "--Mapper.ba_local_max_num_iterations","10",
             "--Mapper.filter_max_reproj_error", "2",
-            "--Mapper.max_reg_trials", "10",
+            "--Mapper.max_reg_trials", "7",
         ]
         mapping_reporter = mapping_progress(progress_callback, nb_saved)
         run_step(
@@ -1548,7 +1545,7 @@ def main(
 def run(
     inputfile,
     outputfile,
-    fps,
+    fps=None,
     starttime=None,
     endtime=None,
     totaltrainiters=10000,
