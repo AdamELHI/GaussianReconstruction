@@ -36,27 +36,40 @@ The matching strategy is selected automatically:
 
 - With one video, COLMAP uses sequential matching by default. This is faster and
   compares frames that are close to each other in the video.
-- With multiple videos, COLMAP uses exhaustive matching so that frames from
-  different videos can be connected.
-- **Force exhaustive matching** can be enabled in the settings to use exhaustive
-  matching with a single video.
-
-Exhaustive matching is slower because it compares every image pair. To reduce
-false connections between videos, it also uses stricter geometric verification:
-at least 50 geometrically consistent matches, a minimum inlier ratio of 30%, and
-a maximum geometric error of 2 pixels.
+- With multiple videos, the application first matches neighboring frames only
+  within each video. It then compares every cross-video combination among up to
+  120 sharp, temporally distributed anchors per video. This bounded exhaustive
+  pass uses the existing SIFT descriptors and requires no Vocabulary Tree or
+  additional image index. Anchor pairs require at least 100 geometrically
+  consistent matches, a 45% inlier ratio, and at most 1.5 pixels of geometric
+  error. Every anchor pair passing this geometric verification is retained for
+  mapping; no additional group-level filter removes isolated valid pairs.
+- After mapping, the application reports registered-image counts per video and
+  warns when COLMAP creates disconnected sparse models. Brush trains on the
+  largest sparse model; images belonging only to the other models are excluded
+  from the exported reconstruction.
+- **Force exhaustive matching** bypasses this strategy and compares every image
+  pair. It is slower and is mainly useful for diagnostics or small datasets.
 
 ## Settings
 
-- **Frame rate** controls the number of frames extracted per second. Increase it when the camera moves quickly so that the reconstruction captures enough intermediate viewpoints.
+- **Frame rate** is configured independently for each selected video and is
+  **Automatic** by default: frames are selected from useful
+  camera motion and relative sharpness. Automatic selection requires a
+  displacement proportional to the image width and normally prefers the
+  sharpest half of the recent video segment. To preserve feature-tracking
+  continuity, it keeps the best available bridge frame before the viewpoint
+  displacement becomes too large. Entering a numerical value for one video
+  switches only that video to temporal sampling: it is divided into matching
+  time windows and the sharpest usefully moved frame is kept in each window.
+  Windows containing only stationary near-duplicates are rejected.
 - **Start time / End time** define the portion of each selected video to
   process. After selecting the videos, open the settings: a separate row is
-  displayed for every video, with its own start and end fields. Use the
+  displayed for every video, with its own FPS, start, and end fields. Use the
   `HH:MM:SS` format; leave the start empty to begin at the first frame and the
   end empty to continue until the end of that video.
 - **Use GPU** speeds up processing when a compatible GPU and the required drivers are available.
 - **Force exhaustive matching** compares every extracted image pair, even when only one video is selected. It can improve connections between non-consecutive viewpoints but increases processing time.
-- **Skip alignment** disables the final PCA alignment. Use this option only when PCA alignment distorts the reconstructed scene because of a geometric bias.
 - **Keep temporary files** preserves the intermediate COLMAP and Brush working
   files after reconstruction. Each run uses a separate
   `LastReconstruction/reconstruction-*` directory so concurrent application

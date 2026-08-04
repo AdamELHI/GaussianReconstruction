@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 import math
 import os
@@ -7,17 +5,19 @@ import re
 import signal
 import shutil
 import sqlite3
+import struct
 import cv2 as cv
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-from collections import deque
+from collections import defaultdict, deque
 from pathlib import Path
 import numpy as np
 from plyfile import PlyData
 from scipy.spatial.transform import Rotation
+from model.adaptive_frame_selector import AdaptiveFrameSelector
 if os.name == "nt":
     import psutil
 
@@ -187,20 +187,96 @@ def colmap_matcher_name(
     video_count: int,
     force_exhaustive_matcher: bool = False,
 ) -> str:
-    if force_exhaustive_matcher or video_count > 1:
+    if force_exhaustive_matcher:
         return "exhaustive_matcher"
+    if video_count > 1:
+        return "matches_importer"
     return "sequential_matcher"
 
 
 def exhaustive_geometry_args() -> list[str]:
     return [
         "--TwoViewGeometry.min_num_inliers",
-        "50",
+        "60",
         "--TwoViewGeometry.min_inlier_ratio",
         "0.30",
         "--TwoViewGeometry.max_error",
         "2.0",
     ]
+
+
+def inter_video_geometry_args() -> list[str]:
+    return [
+        "--TwoViewGeometry.min_num_inliers",
+        "100",
+        "--TwoViewGeometry.min_inlier_ratio",
+        "0.45",
+        "--TwoViewGeometry.max_error",
+        "1.5",
+    ]
+
+
+def write_intra_video_match_list(
+    images_dir: Path,
+    match_list_path: Path,
+    overlap: int,
+) -> int:
+    pairs = []
+    for video_dir in sorted(path for path in images_dir.iterdir() if path.is_dir()):
+        image_names = [
+            path.relative_to(images_dir).as_posix()
+            for path in sorted(video_dir.iterdir())
+            if path.is_file()
+        ]
+        for first_index, first_name in enumerate(image_names):
+            stop = min(len(image_names), first_index + overlap + 1)
+            for second_index in range(first_index + 1, stop):
+                pairs.append(f"{first_name} {image_names[second_index]}")
+    match_list_path.write_text("\n".join(pairs) + "\n", encoding="utf-8")
+    return len(pairs)
+
+
+def select_video_anchor_names(
+    frame_records: list[tuple[str, float, str]],
+    max_anchors: int = 120,
+) -> list[str]:
+    if max_anchors <= 0:
+        raise ValueError("The maximum number of anchors must be positive.")
+    preferred = [record for record in frame_records if record[2] != "bridge"]
+    minimum_preferred = min(3, len(frame_records))
+    candidates = (
+        preferred if len(preferred) >= minimum_preferred else frame_records
+    )
+    if len(candidates) <= max_anchors:
+        return [record[0] for record in candidates]
+
+    anchors = []
+    for bin_index in range(max_anchors):
+        start = bin_index * len(candidates) // max_anchors
+        end = (bin_index + 1) * len(candidates) // max_anchors
+        anchors.append(max(candidates[start:end], key=lambda record: record[1])[0])
+    return anchors
+
+
+def write_inter_video_anchor_match_list(
+    video_frame_records: list[list[tuple[str, float, str]]],
+    match_list_path: Path,
+    max_anchors_per_video: int = 120,
+) -> tuple[int, int]:
+    anchors_by_video = [
+        select_video_anchor_names(records, max_anchors_per_video)
+        for records in video_frame_records
+    ]
+    pairs = []
+    for first_video_index, first_anchors in enumerate(anchors_by_video):
+        for second_anchors in anchors_by_video[first_video_index + 1 :]:
+            pairs.extend(
+                f"{first_anchor} {second_anchor}"
+                for first_anchor in first_anchors
+                for second_anchor in second_anchors
+            )
+    match_list_path.write_text("\n".join(pairs) + "\n", encoding="utf-8")
+    return len(pairs), sum(len(anchors) for anchors in anchors_by_video)
 
 
 def create_reconstruction_work_dir(
@@ -542,6 +618,28 @@ def exhaustive_matching_progress(progress_callback):
         emit_progress(
             progress_callback,
             f"Matching: {current}/{total} blocks processed.",
+        )
+
+    return report
+
+
+def imported_matching_progress(progress_callback, stage: str):
+    if progress_callback is None:
+        return None
+
+    pattern = re.compile(r"Processing block \[(\d+)/(\d+)\]")
+    last_reported = None
+
+    def report(line: str) -> None:
+        nonlocal last_reported
+        match = pattern.search(line)
+        if not match or match.groups() == last_reported:
+            return
+        last_reported = match.groups()
+        current, total = last_reported
+        emit_progress(
+            progress_callback,
+            f"{stage}: {current}/{total} pair blocks processed.",
         )
 
     return report
@@ -917,6 +1015,72 @@ def colmap_registered_image_count(model_dir: Path) -> int | None:
     return int.from_bytes(count_bytes, byteorder="little", signed=False)
 
 
+def colmap_registered_image_names(model_dir: Path) -> list[str] | None:
+    """Read registered image names from a COLMAP binary sparse model."""
+    images_bin = model_dir / "images.bin"
+    try:
+        with images_bin.open("rb") as model_file:
+            count_bytes = model_file.read(8)
+            if len(count_bytes) != 8:
+                return None
+            image_count = struct.unpack("<Q", count_bytes)[0]
+            names = []
+            for _ in range(image_count):
+                fixed_data = model_file.read(64)
+                if len(fixed_data) != 64:
+                    return None
+                name_bytes = bytearray()
+                while True:
+                    character = model_file.read(1)
+                    if not character:
+                        return None
+                    if character == b"\0":
+                        break
+                    name_bytes.extend(character)
+                names.append(name_bytes.decode("utf-8", errors="replace"))
+                point_count_bytes = model_file.read(8)
+                if len(point_count_bytes) != 8:
+                    return None
+                point_count = struct.unpack("<Q", point_count_bytes)[0]
+                model_file.seek(point_count * 24, os.SEEK_CUR)
+            return names
+    except OSError:
+        return None
+
+
+def colmap_sparse_model_stats(sparse_dir: Path) -> list[dict[str, object]]:
+    """Summarize registered images per video for every sparse model."""
+    model_dirs = sorted(
+        (
+            path
+            for path in sparse_dir.iterdir()
+            if path.is_dir() and path.name.isdigit()
+        ),
+        key=lambda path: int(path.name),
+    ) if sparse_dir.is_dir() else []
+    stats = []
+    for model_dir in model_dirs:
+        names = colmap_registered_image_names(model_dir)
+        if names is None:
+            count = colmap_registered_image_count(model_dir)
+            stats.append(
+                {"model": model_dir.name, "registered": count, "videos": {}}
+            )
+            continue
+        videos: dict[str, int] = defaultdict(int)
+        for name in names:
+            video_name = Path(name).parts[0] if Path(name).parts else name
+            videos[video_name] += 1
+        stats.append(
+            {
+                "model": model_dir.name,
+                "registered": len(names),
+                "videos": dict(sorted(videos.items())),
+            }
+        )
+    return stats
+
+
 
 def align_ply(ply_path: Path, progress_callback=None, pause_controller=None) -> None:
     """PCA-align the exported splat using splat-transform."""
@@ -982,13 +1146,12 @@ def align_ply(ply_path: Path, progress_callback=None, pause_controller=None) -> 
 def main(
     input_file,
     output_file,
-    frame_rate=5.0,
+    frame_rate=None,
     start_time=None,
     end_time=None,
     total_train_iters=10000,
     use_gpu=True,
     keep_temp=False,
-    skip_align=False,
     is_loading=False,
     progress_callback=None,
     pause_controller=None,
@@ -996,7 +1159,9 @@ def main(
     force_exhaustive_matcher=False,
     video_ranges=None,
 ) -> int:
-    if not np.isfinite(frame_rate) or frame_rate <= 0:
+    if frame_rate is not None and (
+        not np.isfinite(frame_rate) or frame_rate <= 0
+    ):
         raise ValueError("Frame rate must be greater than zero.")
     if pause_controller:
         pause_controller.wait_if_paused()
@@ -1068,6 +1233,9 @@ def main(
             force_exhaustive_matcher,
         )
         use_exhaustive_matcher = matcher_name == "exhaustive_matcher"
+        use_multi_video_matching = (
+            len(input_paths) > 1 and not use_exhaustive_matcher
+        )
         print("The next steps in the implementation process are :")
         print("  1. Extracting frames from the selected video file(s)")
         print("  2. COLMAP feature extraction")
@@ -1078,6 +1246,7 @@ def main(
 
         nb_saved = 0
         total_video_duration_seconds = 0.0
+        video_frame_records = []
         for video_number, source_path in enumerate(input_paths, start=1):
             current_video_frames_dir = video_frames_dir(
                 images_dir,
@@ -1087,12 +1256,28 @@ def main(
             source_range = (
                 (video_ranges or {}).get(str(source_path), {}) or {}
             )
+            video_frame_rate = source_range.get("fps", frame_rate)
+            if video_frame_rate is not None:
+                video_frame_rate = float(video_frame_rate)
+                if (
+                    not np.isfinite(video_frame_rate)
+                    or video_frame_rate <= 0
+                ):
+                    raise ValueError(
+                        f"Frame rate for {source_path.name} must be greater "
+                        "than zero."
+                    )
             video_start_time = source_range.get("start_time", start_time)
             video_end_time = source_range.get("end_time", end_time)
+            selection_mode = (
+                "automatic"
+                if video_frame_rate is None
+                else f"{video_frame_rate:g} fps"
+            )
             emit_progress(
                 progress_callback,
                 f"Extracting video {video_number}/{len(input_paths)}: "
-                f"{source_path}",
+                f"{source_path} ({selection_mode})",
             )
 
             processing_input_path = normalize_video_if_interlaced(
@@ -1110,6 +1295,7 @@ def main(
 
             saved_for_video = 0
             processed_count = 0
+            frame_records = []
             try:
                 nb_frame = 0
                 fps = video_capture.get(cv.CAP_PROP_FPS)
@@ -1135,11 +1321,8 @@ def main(
                         f"{source_path}."
                     )
 
-                base_interval = max(1.0, fps / frame_rate)
-                snapshot_every = max(1, round(base_interval))
-                next_snapshot = nb_frame
                 video_capture.set(cv.CAP_PROP_POS_FRAMES, nb_frame)
-                score_mean = None
+                frame_selector = AdaptiveFrameSelector(fps, video_frame_rate)
                 frame_count = end_frame - nb_frame
                 progress_interval = max(1, frame_count // 100)
 
@@ -1151,47 +1334,32 @@ def main(
                         break
                     processed_count += 1
 
-                    if nb_frame >= next_snapshot:
-                        gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
-                        laplacian = cv.Laplacian(gray, cv.CV_16S)
-                        _, laplacian_stddev = cv.meanStdDev(laplacian)
-                        sharpness = float(laplacian_stddev[0, 0] ** 2)
-
+                    selected = frame_selector.observe(nb_frame, image)
+                    if selected is not None:
                         image_path = current_video_frames_dir / (
-                            f"frame_{saved_for_video:06d}.jpg"
+                            f"frame_{selected.frame_index:06d}.jpg"
                         )
-                        if not cv.imwrite(str(image_path), image):
+                        if not cv.imwrite(str(image_path), selected.image):
                             raise RuntimeError(
-                                f"Could not write extracted frame: {image_path}"
+                                "Could not write extracted frame: "
+                                f"{image_path}"
                             )
                         nb_saved += 1
                         saved_for_video += 1
-                        if score_mean is None:
-                            score_mean = sharpness
-                            target_interval = snapshot_every
-                        else:
-                            sharpness_ratio = sharpness / max(score_mean, 1e-6)
-                            sharpness_ratio = min(
-                                1.5,
-                                max(0.5, sharpness_ratio),
+                        frame_records.append(
+                            (
+                                image_path.relative_to(images_dir).as_posix(),
+                                selected.sharpness,
+                                selected.reason,
                             )
-                            target_interval = max(
-                                1,
-                                round(base_interval * sharpness_ratio),
-                            )
-                            score_mean += 0.15 * (sharpness - score_mean)
-
-                        snapshot_every = max(
-                            1,
-                            round((snapshot_every + target_interval) / 2),
                         )
                         print(
-                            f"Video {video_number}, frame {nb_frame}: "
-                            f"sharpness={sharpness:.2f}, "
-                            f"reference={score_mean:.2f}, "
-                            f"interval={snapshot_every}"
+                            f"Video {video_number}, frame "
+                            f"{selected.frame_index}: "
+                            f"sharpness={selected.sharpness:.2f}, "
+                            f"motion={selected.motion_px:.2f}px, "
+                            f"selection={selected.reason}"
                         )
-                        next_snapshot = nb_frame + snapshot_every
 
                     nb_frame += 1
                     if (
@@ -1205,6 +1373,32 @@ def main(
                         )
                         print(message)
                         emit_progress(progress_callback, message)
+
+                selected = frame_selector.flush()
+                if selected is not None:
+                    image_path = current_video_frames_dir / (
+                        f"frame_{selected.frame_index:06d}.jpg"
+                    )
+                    if not cv.imwrite(str(image_path), selected.image):
+                        raise RuntimeError(
+                            f"Could not write extracted frame: {image_path}"
+                        )
+                    nb_saved += 1
+                    saved_for_video += 1
+                    frame_records.append(
+                        (
+                            image_path.relative_to(images_dir).as_posix(),
+                            selected.sharpness,
+                            selected.reason,
+                        )
+                    )
+                    print(
+                        f"Video {video_number}, frame "
+                        f"{selected.frame_index}: "
+                        f"sharpness={selected.sharpness:.2f}, "
+                        f"motion={selected.motion_px:.2f}px, "
+                        f"selection={selected.reason}"
+                    )
             finally:
                 video_capture.release()
 
@@ -1213,6 +1407,7 @@ def main(
                     f"No usable frames were extracted from {source_path}."
                 )
             total_video_duration_seconds += processed_count / fps
+            video_frame_records.append(frame_records)
             emit_progress(
                 progress_callback,
                 f"Video {video_number}/{len(input_paths)}: "
@@ -1287,70 +1482,173 @@ def main(
                 f"{max_num_matches} matches with "
                 f"{available_vram / 1024**3:.1f} GiB of available VRAM"
             )
-        matcher_args = [
-            colmap,
-            matcher_name,
+        gpu_matching_args = [
+            f"--{COLMAP_MATCHING_OPTIONS}.use_gpu",
+            "1" if use_colmap_gpu else "0",
+        ]
+        common_matching_args = [
             "--database_path",
             str(tmp_dir / "database.db"),
-            f"--{COLMAP_MATCHING_OPTIONS}.max_num_matches", str(max_num_matches),
-            f"--{COLMAP_MATCHING_OPTIONS}.guided_matching", "1",
-            f"--{COLMAP_MATCHING_OPTIONS}.num_threads", str(num_threads),
+            f"--{COLMAP_MATCHING_OPTIONS}.max_num_matches",
+            str(max_num_matches),
+            f"--{COLMAP_MATCHING_OPTIONS}.guided_matching",
+            "1",
+            f"--{COLMAP_MATCHING_OPTIONS}.num_threads",
+            str(num_threads),
+            *gpu_matching_args,
         ]
-        if use_exhaustive_matcher:
-            matcher_args.extend(exhaustive_geometry_args())
-            matching_limits = (
-                f"max matches={max_num_matches}, threads={num_threads}, "
-                "min geometric inliers=50, min inlier ratio=0.30, "
-                "max geometric error=2.0 px"
-            )
-            matching_progress = exhaustive_matching_progress(progress_callback)
-            matching_mode_message = (
-                "Exhaustive matching selected: every image pair will be "
-                "compared with stricter geometric verification."
-            )
-        else:
+
+        if use_multi_video_matching:
             matching_overlap = sequential_matching_overlap(
                 nb_saved,
                 total_video_duration_seconds,
             )
-            matcher_args.extend(
+            intra_match_list = tmp_dir / "intra_video_pairs.txt"
+            num_intra_pairs = write_intra_video_match_list(
+                images_dir,
+                intra_match_list,
+                matching_overlap,
+            )
+            inter_match_list = tmp_dir / "inter_video_anchor_pairs.txt"
+            num_inter_pairs, num_anchors = write_inter_video_anchor_match_list(
+                video_frame_records,
+                inter_match_list,
+            )
+
+            emit_progress(
+                progress_callback,
+                "Multi-video matching: linking neighboring frames inside "
+                "each video.",
+            )
+            intra_output = run_step(
+                "intra-video matching",
                 [
-                    "--SequentialMatching.overlap",
-                    str(matching_overlap),
-                ]
+                    colmap,
+                    "matches_importer",
+                    *common_matching_args,
+                    "--match_list_path",
+                    str(intra_match_list),
+                    "--match_type",
+                    "pairs",
+                    "--TwoViewGeometry.min_num_inliers",
+                    "30",
+                    "--TwoViewGeometry.min_inlier_ratio",
+                    "0.25",
+                    "--TwoViewGeometry.max_error",
+                    "3.0",
+                ],
+                progress_callback=progress_callback,
+                user_message=(
+                    f"Matching {num_intra_pairs} neighboring frame pairs "
+                    "inside the selected videos."
+                ),
+                output_callback=imported_matching_progress(
+                    progress_callback,
+                    "Intra-video matching",
+                ),
+                pause_controller=pause_controller,
+            )
+
+            emit_progress(
+                progress_callback,
+                "Multi-video matching: verifying anchor pairs between videos.",
+            )
+            inter_output = run_step(
+                "inter-video anchor matching",
+                [
+                    colmap,
+                    "matches_importer",
+                    *common_matching_args,
+                    "--match_list_path",
+                    str(inter_match_list),
+                    "--match_type",
+                    "pairs",
+                    "--SiftMatching.max_ratio",
+                    "0.75",
+                    *inter_video_geometry_args(),
+                ],
+                progress_callback=progress_callback,
+                user_message=(
+                    f"Matching {num_inter_pairs} cross-video pairs from "
+                    f"{num_anchors} sharp anchor images."
+                ),
+                output_callback=imported_matching_progress(
+                    progress_callback,
+                    "Cross-video matching",
+                ),
+                pause_controller=pause_controller,
             )
             matching_limits = (
-                f"max matches={max_num_matches}, threads={num_threads}, "
-                f"overlap={matching_overlap}"
-            )
-            matching_progress = indexed_colmap_progress(
-                progress_callback,
-                "Matching",
-                "Processing image",
+                f"intra-video overlap={matching_overlap}, anchors="
+                f"{num_anchors}, cross-video pairs={num_inter_pairs}, "
+                "cross-video inliers>=100, "
+                "inlier ratio>=0.45, error<=1.5 px"
             )
             matching_mode_message = (
-                "Sequential matching selected for the single video."
+                "Multi-stage matching selected: sequential flow within each "
+                "video and exhaustive anchor links between videos. Every "
+                "cross-video pair that passes COLMAP's strict geometric "
+                "verification is retained for mapping."
             )
+            matcher_output = intra_output + inter_output
+        else:
+            matcher_args = [
+                colmap,
+                matcher_name,
+                *common_matching_args,
+            ]
+            if use_exhaustive_matcher:
+                matcher_args.extend(exhaustive_geometry_args())
+                matching_limits = (
+                    f"max matches={max_num_matches}, threads={num_threads}, "
+                    "min geometric inliers=60, min inlier ratio=0.30, "
+                    "max geometric error=2.0 px"
+                )
+                matching_progress = exhaustive_matching_progress(
+                    progress_callback
+                )
+                matching_mode_message = (
+                    "Exhaustive matching selected: every image pair will be "
+                    "compared with stricter geometric verification."
+                )
+            else:
+                matching_overlap = sequential_matching_overlap(
+                    nb_saved,
+                    total_video_duration_seconds,
+                )
+                matcher_args.extend(
+                    [
+                        "--SequentialMatching.overlap",
+                        str(matching_overlap),
+                    ]
+                )
+                matching_limits = (
+                    f"max matches={max_num_matches}, threads={num_threads}, "
+                    f"overlap={matching_overlap}"
+                )
+                matching_progress = indexed_colmap_progress(
+                    progress_callback,
+                    "Matching",
+                    "Processing image",
+                )
+                matching_mode_message = (
+                    "Sequential matching selected for the single video."
+                )
+
+            matcher_output = run_step(
+                matcher_name,
+                matcher_args,
+                progress_callback=progress_callback,
+                user_message=(
+                    "Comparing images to find camera movement "
+                    f"using {'the CUDA GPU' if use_colmap_gpu else 'the CPU'}."
+                ),
+                output_callback=matching_progress,
+                pause_controller=pause_controller,
+            )
+
         print(f"COLMAP matching limits: {matching_limits}")
         emit_progress(progress_callback, matching_mode_message)
-
-        if use_colmap_gpu:
-            matcher_args.extend([f"--{COLMAP_MATCHING_OPTIONS}.use_gpu", "1"])
-        else:
-            matcher_args.extend([f"--{COLMAP_MATCHING_OPTIONS}.use_gpu", "0"])
-        
-        
-        matcher_output = run_step(
-            matcher_name,
-            matcher_args,
-            progress_callback=progress_callback,
-            user_message=(
-                "Comparing images to find camera movement "
-                f"using {'the CUDA GPU' if use_colmap_gpu else 'the CPU'}."
-            ),
-            output_callback=matching_progress,
-            pause_controller=pause_controller,
-        )
 
         match_count = colmap_database_match_count(tmp_dir / "database.db")
         if match_count == 0:
@@ -1386,14 +1684,14 @@ def main(
             str(num_threads),
             "--Mapper.max_model_overlap",
             "30",
-            "--Mapper.ba_global_max_refinements","20",
+            "--Mapper.ba_global_max_refinements","5",
             "--Mapper.init_min_num_inliers", "50",
-            "--Mapper.min_num_matches", "10",
+            "--Mapper.min_num_matches", "20",
             "--Mapper.tri_min_angle", "0.5",
             "--Mapper.ba_global_max_num_iterations", "15",
             "--Mapper.ba_local_max_num_iterations","10",
             "--Mapper.filter_max_reproj_error", "2",
-            "--Mapper.max_reg_trials", "10",
+            "--Mapper.max_reg_trials", "7",
         ]
         mapping_reporter = mapping_progress(progress_callback, nb_saved)
         run_step(
@@ -1404,13 +1702,44 @@ def main(
             output_callback=mapping_reporter,
             pause_controller=pause_controller,
         )
-        if mapping_reporter is not None:
-            mapping_reporter.finish(
-                colmap_registered_image_count(sparse_dir / "0")
+        sparse_model_stats = colmap_sparse_model_stats(sparse_dir)
+        if not sparse_model_stats:
+            raise ExternalToolError(
+                "COLMAP mapping did not create a sparse reconstruction model."
             )
+        primary_model_stats = max(
+            sparse_model_stats,
+            key=lambda stats: int(stats["registered"] or 0),
+        )
+        total_registered_images = sum(
+            int(stats["registered"] or 0) for stats in sparse_model_stats
+        )
+        for model_stats in sparse_model_stats:
+            video_details = ", ".join(
+                f"{video}: {count}"
+                for video, count in model_stats["videos"].items()
+            ) or "per-video details unavailable"
+            emit_progress(
+                progress_callback,
+                f"Sparse model {model_stats['model']}: "
+                f"{model_stats['registered']} registered images "
+                f"({video_details}).",
+            )
+        if len(sparse_model_stats) > 1:
+            emit_progress(
+                progress_callback,
+                "Warning: COLMAP created multiple disconnected sparse "
+                f"models. The primary model is sparse/"
+                f"{primary_model_stats['model']} with "
+                f"{primary_model_stats['registered']} images; Brush trains "
+                "on this largest model, while images from the other models "
+                "are excluded from the exported reconstruction.",
+            )
+        if mapping_reporter is not None:
+            mapping_reporter.finish(total_registered_images)
         emit_progress(progress_callback, "Basic 3D structure constructed.")
         if colmap_track:
-            colmap_model_dir = sparse_dir / "0"
+            colmap_model_dir = sparse_dir / str(primary_model_stats["model"])
             gui_colmap = os.environ.get(
                 "COLMAP_GUI_BIN",
                 "/usr/bin/colmap" if IS_LINUX else colmap,
@@ -1508,13 +1837,8 @@ def main(
                 "Optional cleaning is ignored; the relevant tool is not available.",
             )
 
-        if not skip_align and splat_transform:
+        if splat_transform:
             align_ply(ply_path, progress_callback, pause_controller)
-        elif skip_align:
-            emit_progress(
-                progress_callback,
-                "Final alignment is skipped according to the chosen parameters.",
-            )
 
         if not keep_temp:
             if pause_controller:
@@ -1548,13 +1872,12 @@ def main(
 def run(
     inputfile,
     outputfile,
-    fps,
+    fps=None,
     starttime=None,
     endtime=None,
     totaltrainiters=10000,
     usegpu=True,
     keeptemp=False,
-    skipalign=False,
     colmaptrack=False,
     forceexhaustivematcher=False,
     videoranges=None,
@@ -1570,7 +1893,6 @@ def run(
         total_train_iters=totaltrainiters,
         use_gpu=usegpu,
         keep_temp=keeptemp,
-        skip_align=skipalign,
         colmap_track=colmaptrack,
         force_exhaustive_matcher=forceexhaustivematcher,
         video_ranges=videoranges,
