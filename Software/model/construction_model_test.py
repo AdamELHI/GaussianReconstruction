@@ -59,3 +59,31 @@ def test_video_range_is_selected_for_each_source():
         Path("/videos/second.mp4"),
         parameters,
     ) == ("00:01:00", None)
+
+
+def test_video_fps_is_selected_for_each_source():
+    parameters = {
+        "fps": None,
+        "video_ranges": {
+            "/videos/first.mp4": {"fps": 2.5},
+            "/videos/second.mp4": {"fps": None},
+        },
+    }
+
+    assert ConstructionModel.video_fps_for_source(
+        Path("/videos/first.mp4"),
+        parameters,
+    ) == 2.5
+    assert ConstructionModel.video_fps_for_source(
+        Path("/videos/second.mp4"),
+        parameters,
+    ) is None
+
+
+def test_video_fps_falls_back_to_legacy_global_value():
+    parameters = {"fps": 3.0, "video_ranges": {}}
+
+    assert ConstructionModel.video_fps_for_source(
+        Path("/videos/first.mp4"),
+        parameters,
+    ) == 3.0

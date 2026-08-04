@@ -443,9 +443,23 @@ class AppController(QObject):
 
             self.reconstruction_parameters = parameters
             frame_rate = self.reconstruction_parameters["fps"]
-            frame_rate_label = (
-                f"{frame_rate} fps" if frame_rate is not None else "automatic frames"
-            )
+            video_ranges = self.reconstruction_parameters.get("video_ranges") or {}
+            if video_ranges:
+                manual_video_fps = any(
+                    settings.get("fps") is not None
+                    for settings in video_ranges.values()
+                )
+                frame_rate_label = (
+                    "per-video frame rates"
+                    if manual_video_fps
+                    else "automatic frames"
+                )
+            else:
+                frame_rate_label = (
+                    f"{frame_rate} fps"
+                    if frame_rate is not None
+                    else "automatic frames"
+                )
             self.view.set_status(
                 "Parameters applied  : "
                 f"{frame_rate_label}, "

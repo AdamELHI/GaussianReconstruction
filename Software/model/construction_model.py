@@ -77,6 +77,16 @@ class ConstructionModel:
             source_range.get("end_time", parameters.get("end_time")),
         )
 
+    @staticmethod
+    def video_fps_for_source(
+        source: Path,
+        parameters: dict[str, Any],
+    ) -> float | None:
+        video_ranges = parameters.get("video_ranges") or {}
+        source_range = video_ranges.get(str(source), {}) or {}
+        value = source_range.get("fps", parameters.get("fps"))
+        return None if value is None else float(value)
+
     def validate_reconstruction_parameters(
         self,
         input_path,
@@ -107,6 +117,14 @@ class ConstructionModel:
 
         parsed_ranges = []
         for source in input_paths:
+            source_fps = self.video_fps_for_source(source, parameters)
+            if source_fps is not None and (
+                not math.isfinite(source_fps) or source_fps <= 0
+            ):
+                raise ValueError(
+                    f"Frames per second for {source.name} must be greater "
+                    "than zero."
+                )
             start_time, end_time = self.video_range_for_source(
                 source,
                 parameters,
@@ -123,17 +141,19 @@ class ConstructionModel:
                 raise ValueError(
                     f"End time must be later than start time for {source.name}."
                 )
-            parsed_ranges.append((source, start_seconds, end_seconds))
+            parsed_ranges.append(
+                (source, source_fps, start_seconds, end_seconds)
+            )
 
         if not any(
             start_seconds is not None or end_seconds is not None
-            for _, start_seconds, end_seconds in parsed_ranges
+            for _, _, start_seconds, end_seconds in parsed_ranges
         ):
             return
 
         import cv2 as cv
 
-        for source, start_seconds, end_seconds in parsed_ranges:
+        for source, _, start_seconds, end_seconds in parsed_ranges:
             if start_seconds is None and end_seconds is None:
                 continue
             video_capture = cv.VideoCapture(str(source))
@@ -181,10 +201,9 @@ class ConstructionModel:
         total_train_iters: int = 7000,
         use_gpu: bool = True,
         keep_temp: bool = True,
-        skip_align: bool = False,
         colmap_track: bool = False,
         force_exhaustive_matcher: bool = False,
-        video_ranges: dict[str, dict[str, str | None]] | None = None,
+        video_ranges: dict[str, dict[str, Any]] | None = None,
         progress_callback: Callable[[str], None] | None = None,
         pause_controller: Any | None = None,
     ) -> dict[str, Any]:
@@ -224,7 +243,6 @@ class ConstructionModel:
                 totaltrainiters=total_train_iters,
                 usegpu=use_gpu,
                 keeptemp=keep_temp,
-                skipalign=skip_align,
                 colmaptrack=colmap_track,
                 forceexhaustivematcher=force_exhaustive_matcher,
                 videoranges=video_ranges or {},

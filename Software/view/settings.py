@@ -22,7 +22,6 @@ class Settings(QDialog):
         "total_train_iters": 7000,
         "use_gpu": True,
         "keep_temp": False,
-        "skip_align": False,
         "colmap_track": False,
         "force_exhaustive_matcher": False,
         "video_ranges": {},
@@ -65,18 +64,19 @@ class Settings(QDialog):
             int(self.parameters["total_train_iters"])
         )
 
-        run_form.addRow("Frames per second :", self.fps_input)
+        if not self.input_paths:
+            run_form.addRow("Frames per second :", self.fps_input)
         run_form.addRow("Brush Iterations :", self.total_train_iters_input)
 
         self.start_time_input = None
         self.end_time_input = None
         video_ranges_group = None
         if self.input_paths:
-            video_ranges_group = QGroupBox("Start and end for each video")
+            video_ranges_group = QGroupBox("Extraction settings for each video")
             video_ranges_layout = QVBoxLayout(video_ranges_group)
-            video_ranges_table = QTableWidget(len(self.input_paths), 3)
+            video_ranges_table = QTableWidget(len(self.input_paths), 4)
             video_ranges_table.setHorizontalHeaderLabels(
-                ["Video", "Start (HH:MM:SS)", "End (HH:MM:SS)"]
+                ["Video", "FPS", "Start (HH:MM:SS)", "End (HH:MM:SS)"]
             )
             video_ranges_table.horizontalHeader().setSectionResizeMode(
                 0,
@@ -89,6 +89,20 @@ class Settings(QDialog):
                 video_ranges_table.setCellWidget(row, 0, path_label)
 
                 saved_range = saved_ranges.get(path, {})
+                video_fps_input = QDoubleSpinBox()
+                video_fps_input.setDecimals(2)
+                video_fps_input.setRange(0.0, 120.0)
+                video_fps_input.setSingleStep(0.5)
+                video_fps_input.setSpecialValueText("Automatic")
+                saved_fps = saved_range.get(
+                    "fps",
+                    self.parameters.get("fps"),
+                )
+                video_fps_input.setValue(float(saved_fps or 0.0))
+                video_fps_input.setToolTip(
+                    "Leave Automatic to use motion-based frame selection for "
+                    "this video, or enter a manual frame rate."
+                )
                 start_input = QLineEdit()
                 start_input.setPlaceholderText("00:00:00")
                 start_input.setText(
@@ -103,9 +117,14 @@ class Settings(QDialog):
                     or self.parameters.get("end_time")
                     or ""
                 )
-                video_ranges_table.setCellWidget(row, 1, start_input)
-                video_ranges_table.setCellWidget(row, 2, end_input)
-                self.video_range_inputs[path] = (start_input, end_input)
+                video_ranges_table.setCellWidget(row, 1, video_fps_input)
+                video_ranges_table.setCellWidget(row, 2, start_input)
+                video_ranges_table.setCellWidget(row, 3, end_input)
+                self.video_range_inputs[path] = (
+                    video_fps_input,
+                    start_input,
+                    end_input,
+                )
             video_ranges_layout.addWidget(video_ranges_table)
         else:
             self.start_time_input = QLineEdit()
@@ -132,9 +151,6 @@ class Settings(QDialog):
         self.keep_temp_checkbox = QCheckBox("Keep the temporary directory")
         self.keep_temp_checkbox.setChecked(bool(self.parameters["keep_temp"]))
 
-        self.skip_align_checkbox = QCheckBox("Skip PCA alignment (not recommended)")
-        self.skip_align_checkbox.setChecked(bool(self.parameters["skip_align"]))
-
         self.load_colmap_checkbox = QCheckBox("Open the COLMAP model in its GUI")
         self.load_colmap_checkbox.setChecked(bool(self.parameters["colmap_track"]))
 
@@ -150,7 +166,6 @@ class Settings(QDialog):
 
         options_layout.addWidget(self.use_gpu_checkbox)
         options_layout.addWidget(self.keep_temp_checkbox)
-        options_layout.addWidget(self.skip_align_checkbox)
         options_layout.addWidget(self.load_colmap_checkbox)
         options_layout.addWidget(self.force_exhaustive_matcher_checkbox)
 
@@ -175,30 +190,33 @@ class Settings(QDialog):
 
     def get_parameters(self):
         if self.video_range_inputs:
+            fps = None
             start_time = None
             end_time = None
             video_ranges = {}
-            for path, (start_input, end_input) in self.video_range_inputs.items():
+            for path, inputs in self.video_range_inputs.items():
+                video_fps_input, start_input, end_input = inputs
                 video_start = start_input.text().strip()
                 video_end = end_input.text().strip()
                 video_ranges[path] = {
+                    "fps": video_fps_input.value() or None,
                     "start_time": video_start or None,
                     "end_time": video_end or None,
                 }
         else:
+            fps = self.fps_input.value() or None
             start_time = self.start_time_input.text().strip() or None
             end_time = self.end_time_input.text().strip() or None
             video_ranges = {}
 
         return {
-            "fps": self.fps_input.value() or None,
+            "fps": fps,
             "start_time": start_time,
             "end_time": end_time,
             "video_ranges": video_ranges,
             "total_train_iters": self.total_train_iters_input.value(),
             "use_gpu": self.use_gpu_checkbox.isChecked(),
             "keep_temp": self.keep_temp_checkbox.isChecked(),
-            "skip_align": self.skip_align_checkbox.isChecked(),
             "colmap_track": self.load_colmap_checkbox.isChecked(),
             "force_exhaustive_matcher": (
                 self.force_exhaustive_matcher_checkbox.isChecked()
