@@ -34,22 +34,22 @@ def test_exhaustive_matching_can_be_forced_for_one_video():
 def test_exhaustive_matching_uses_stricter_geometric_verification():
     assert exhaustive_geometry_args() == [
         "--TwoViewGeometry.min_num_inliers",
-        "100",
+        "60",
         "--TwoViewGeometry.min_inlier_ratio",
-        "0.45",
+        "0.30",
         "--TwoViewGeometry.max_error",
-        "1.5",
+        "2.0",
     ]
 
 
 def test_inter_video_matching_uses_strict_geometric_verification():
     assert inter_video_geometry_args() == [
         "--TwoViewGeometry.min_num_inliers",
-        "60",
+        "100",
         "--TwoViewGeometry.min_inlier_ratio",
-        "0.30",
+        "0.45",
         "--TwoViewGeometry.max_error",
-        "2.0",
+        "1.5",
     ]
 
 

@@ -87,3 +87,15 @@ def test_video_fps_falls_back_to_legacy_global_value():
         Path("/videos/first.mp4"),
         parameters,
     ) == 3.0
+
+
+def test_automatic_video_fps_overrides_legacy_global_value():
+    parameters = {
+        "fps": 3.0,
+        "video_ranges": {"/videos/first.mp4": {"fps": None}},
+    }
+
+    assert ConstructionModel.video_fps_for_source(
+        Path("/videos/first.mp4"),
+        parameters,
+    ) is None
